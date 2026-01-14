@@ -1,0 +1,36 @@
+import { prisma } from "@/lib/db";
+import { openai } from "@/lib/openai";
+
+export async function getOrCreateCase(caseId?: string) {
+  if (caseId) {
+    const existing = await prisma.case.findUnique({ where: { id: caseId } });
+    if (existing) return existing;
+  }
+
+  const existing = await prisma.case.findFirst({ orderBy: { createdAt: "asc" } });
+  if (existing) return existing;
+
+  return prisma.case.create({
+    data: {
+      name: "Default Case",
+    },
+  });
+}
+
+export async function ensureVectorStore(caseId?: string) {
+  const caseRecord = await getOrCreateCase(caseId);
+  if (caseRecord.vectorStoreId) {
+    return { caseRecord, vectorStoreId: caseRecord.vectorStoreId };
+  }
+
+  const vectorStore = await openai.vectorStores.create({
+    name: `case-${caseRecord.id}`,
+  });
+
+  const updated = await prisma.case.update({
+    where: { id: caseRecord.id },
+    data: { vectorStoreId: vectorStore.id },
+  });
+
+  return { caseRecord: updated, vectorStoreId: vectorStore.id };
+}
