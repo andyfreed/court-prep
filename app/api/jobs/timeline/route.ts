@@ -46,7 +46,8 @@ export async function POST(req: NextRequest) {
       input,
     });
 
-    const payload = JSON.parse(extractJson(response.output_text ?? ""));
+    const outputText = (response as { output_text?: string }).output_text ?? "";
+    const payload = JSON.parse(extractJson(outputText));
     const parsed = TimelineExtractResponseSchema.safeParse(payload);
 
     if (!parsed.success) {

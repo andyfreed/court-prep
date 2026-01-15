@@ -12,17 +12,17 @@ const UNSUPPORTED_FOR_REASONING = [
 type ResponseCreateParams = Parameters<OpenAI["responses"]["create"]>[0];
 type ResponseCreateOptions = Parameters<OpenAI["responses"]["create"]>[1];
 
-function stripParams<T extends Record<string, unknown>>(
-  params: T,
+function stripParams(
+  params: ResponseCreateParams,
   keys: readonly string[],
-): T {
-  const copy = { ...params } as Record<string, unknown>;
+): ResponseCreateParams {
+  const copy = { ...(params as Record<string, unknown>) };
   for (const key of keys) {
     if (key in copy) {
       delete copy[key];
     }
   }
-  return copy as T;
+  return copy as ResponseCreateParams;
 }
 
 function shouldStripForModel(model: string) {
@@ -47,7 +47,7 @@ export function getOpenAI() {
   return client;
 }
 
-export function buildResponsesParams<T extends ResponseCreateParams>(base: T): T {
+export function buildResponsesParams(base: ResponseCreateParams): ResponseCreateParams {
   const model = typeof base.model === "string" ? base.model : "";
   if (!model) return base;
   if (shouldStripForModel(model)) {

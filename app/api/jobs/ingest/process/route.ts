@@ -129,14 +129,21 @@ async function extractTextFromBuffer(params: {
       new (data: Buffer): { getFileData: () => Record<string, unknown> | null };
     })(params.buffer);
     const data = reader.getFileData() ?? {};
-    const bodyHtml = data?.bodyHTML ? htmlToText(data.bodyHTML, { wordwrap: false }) : "";
-    const body = data?.body ?? bodyHtml ?? "";
+    const bodyHtml = data?.bodyHTML
+      ? htmlToText(String(data.bodyHTML), { wordwrap: false })
+      : "";
+    const body = (data?.body as string | undefined) ?? bodyHtml ?? "";
+    const dateValue = data?.date;
+    const date =
+      typeof dateValue === "string" || typeof dateValue === "number" || dateValue instanceof Date
+        ? new Date(dateValue)
+        : null;
     const headers = [
       data?.subject ? `Subject: ${data.subject}` : null,
       data?.senderName ? `From: ${data.senderName}` : null,
       data?.senderEmail ? `FromEmail: ${data.senderEmail}` : null,
       data?.recipients ? `To: ${data.recipients}` : null,
-      data?.date ? `Date: ${new Date(data.date).toISOString()}` : null,
+      date ? `Date: ${date.toISOString()}` : null,
     ]
       .filter(Boolean)
       .join("\n");
