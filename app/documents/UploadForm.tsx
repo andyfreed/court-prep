@@ -107,7 +107,7 @@ export default function UploadForm({ caseId }: UploadFormProps) {
       } catch {
         return;
       }
-    }, 4000);
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [pendingJobs, caseId]);

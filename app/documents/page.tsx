@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getOrCreateCase } from "@/lib/cases";
 import UploadForm from "./UploadForm";
+import ProcessingUploads from "./ProcessingUploads";
 
 export const dynamic = "force-dynamic";
 
@@ -19,15 +20,8 @@ function formatBytes(bytes: number | null) {
 export default async function DocumentsPage() {
   const caseRecord = await getOrCreateCase();
   const documents = await prisma.document.findMany({
-    where: { caseId: caseRecord.id },
+    where: { caseId: caseRecord.id, openaiFileId: { not: null } },
     orderBy: { createdAt: "desc" },
-  });
-  const ingestJobs = await prisma.documentIngestJob.findMany({
-    where: {
-      caseId: caseRecord.id,
-      status: { not: "done" },
-    },
-    orderBy: { updatedAt: "desc" },
   });
 
   return (
@@ -39,42 +33,7 @@ export default async function DocumentsPage() {
         </p>
       </div>
       <UploadForm caseId={caseRecord.id} />
-      {ingestJobs.length ? (
-        <div className="space-y-3">
-          <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Processing uploads
-          </div>
-          <div className="space-y-3">
-            {ingestJobs.map((job) => (
-              <div
-                key={job.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-4 text-sm"
-              >
-                <div className="space-y-1">
-                  <div className="font-medium text-foreground">{job.filename}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {job.mimeType ?? "Unknown type"} |{" "}
-                    {job.sizeBytes ? formatBytes(job.sizeBytes) : "Unknown size"} |{" "}
-                    {job.updatedAt.toLocaleString()}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    Status: {job.status}
-                    {job.error ? ` - ${job.error}` : ""}
-                  </div>
-                </div>
-                <a
-                  className="text-sm font-medium text-primary hover:underline"
-                  href={job.blobUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open
-                </a>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <ProcessingUploads caseId={caseRecord.id} />
       <div className="space-y-3">
         <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Indexed files

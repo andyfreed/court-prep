@@ -23,6 +23,13 @@ export async function GET(req: NextRequest) {
       where: { caseId: caseRecord.id },
       orderBy: { createdAt: "desc" },
     });
+    const jobs = await prisma.documentIngestJob.findMany({
+      where: { caseId: caseRecord.id },
+      orderBy: { updatedAt: "desc" },
+    });
+    const jobByDocumentId = new Map(
+      jobs.filter((job) => job.documentId).map((job) => [job.documentId!, job]),
+    );
 
     return NextResponse.json({
       caseId: caseRecord.id,
@@ -33,6 +40,8 @@ export async function GET(req: NextRequest) {
         docType: doc.mimeType ?? null,
         uploadedAt: doc.createdAt.toISOString(),
         description: null,
+        status: jobByDocumentId.get(doc.id)?.status ?? "done",
+        ingestError: jobByDocumentId.get(doc.id)?.error ?? null,
       })),
     });
   } catch (error) {

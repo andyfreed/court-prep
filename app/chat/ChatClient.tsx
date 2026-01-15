@@ -19,6 +19,8 @@ type DocumentListEntry = {
   docType: string | null;
   uploadedAt: string;
   description: string | null;
+  status?: string;
+  ingestError?: string | null;
 };
 
 type ChatClientProps = {

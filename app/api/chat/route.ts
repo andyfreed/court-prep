@@ -163,10 +163,13 @@ function buildDocumentSourceRef(params: {
 
 function buildDocumentsListResponse(params: {
   caseId: string;
-  documents: Array<{ document_version_id: string; title: string }>;
+  documents: Array<{ document_version_id: string; title: string; status?: string }>;
 }) {
   const lines = params.documents.map(
-    (doc) => `- ${doc.title} (ID: ${doc.document_version_id})`,
+    (doc) =>
+      `- ${doc.title} (ID: ${doc.document_version_id}${
+        doc.status && doc.status !== "done" ? `, status: ${doc.status}` : ""
+      })`,
   );
 
   return {
@@ -180,7 +183,9 @@ function buildDocumentsListResponse(params: {
       uncertainties: [],
     },
     evidence: params.documents.map((doc) => ({
-      claim: `Document on file: ${doc.title}`,
+      claim: `Document on file: ${doc.title}${
+        doc.status && doc.status !== "done" ? ` (status: ${doc.status})` : ""
+      }`,
       source_refs: [
         buildDocumentSourceRef({
           caseId: params.caseId,
@@ -345,6 +350,8 @@ export async function POST(req: NextRequest) {
           docType: string | null;
           uploadedAt: string;
           description: string | null;
+          status?: string;
+          ingestError?: string | null;
         }>
       | undefined;
 
@@ -382,6 +389,7 @@ export async function POST(req: NextRequest) {
           ? documentsList.map((doc) => ({
               document_version_id: doc.document_version_id,
               title: doc.title,
+              status: doc.status ?? undefined,
             }))
           : (
               await prisma.document.findMany({
@@ -392,6 +400,24 @@ export async function POST(req: NextRequest) {
               document_version_id: doc.id,
               title: doc.title,
             }));
+
+      if (!documentsList?.length) {
+        const jobs = await prisma.documentIngestJob.findMany({
+          where: { caseId: caseRecord.id },
+          orderBy: { updatedAt: "desc" },
+        });
+        const jobByDocumentId = new Map(
+          jobs
+            .filter((job) => job.documentId)
+            .map((job) => [job.documentId!, job.status]),
+        );
+        for (const doc of docList) {
+          const status = jobByDocumentId.get(doc.document_version_id);
+          if (status) {
+            doc.status = status;
+          }
+        }
+      }
 
       const response = buildDocumentsListResponse({
         caseId: caseRecord.id,
