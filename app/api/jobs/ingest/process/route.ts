@@ -196,9 +196,20 @@ async function expandZip(params: {
       },
     );
 
+    const document = await prisma.document.create({
+      data: {
+        caseId: params.caseId,
+        title: entryName,
+        blobUrl: blob.url,
+        mimeType: String(contentType),
+        size: entryBuffer.length,
+      },
+    });
+
     await prisma.documentIngestJob.create({
       data: {
         caseId: params.caseId,
+        documentId: document.id,
         filename: entryName,
         mimeType: String(contentType),
         sizeBytes: entryBuffer.length,
@@ -268,7 +279,7 @@ async function processJob(jobId: string) {
       data: { status: "indexing" },
     });
 
-    const { vectorStoreId, caseRecord } = await ensureVectorStore(job.caseId);
+    const { vectorStoreId } = await ensureVectorStore(job.caseId);
     const file = new File([extracted.text], `${job.filename}.txt`, {
       type: "text/plain",
     });
@@ -297,17 +308,26 @@ async function processJob(jobId: string) {
       "vector_store_attach",
     );
 
-    const document = await prisma.document.create({
-      data: {
-        caseId: caseRecord.id,
-        title: job.filename,
-        blobUrl: job.blobUrl,
-        openaiFileId: openaiFile.id,
-        vectorStoreId,
-        mimeType: job.mimeType ?? null,
-        size: job.sizeBytes ?? null,
-      },
-    });
+    const document =
+      job.documentId
+        ? await prisma.document.update({
+            where: { id: job.documentId },
+            data: {
+              openaiFileId: openaiFile.id,
+              vectorStoreId,
+            },
+          })
+        : await prisma.document.create({
+            data: {
+              caseId: job.caseId,
+              title: job.filename,
+              blobUrl: job.blobUrl,
+              openaiFileId: openaiFile.id,
+              vectorStoreId,
+              mimeType: job.mimeType ?? null,
+              size: job.sizeBytes ?? null,
+            },
+          });
 
     await prisma.documentIngestJob.update({
       where: { id: job.id },

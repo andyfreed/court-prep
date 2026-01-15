@@ -51,9 +51,20 @@ export async function POST(req: NextRequest) {
           const caseRecord = await getOrCreateCase(payload.caseId);
           const fallbackName = payload.originalName ?? "upload.bin";
           const fileName = getFileName(blob.pathname, fallbackName);
+          const document = await prisma.document.create({
+            data: {
+              caseId: caseRecord.id,
+              title: payload.title ?? fileName,
+              blobUrl: blob.url,
+              mimeType: payload.mimeType ?? blob.contentType ?? null,
+              size: payload.size ?? null,
+            },
+          });
+
           await prisma.documentIngestJob.create({
             data: {
               caseId: caseRecord.id,
+              documentId: document.id,
               filename: payload.title ?? fileName,
               mimeType: payload.mimeType ?? blob.contentType ?? null,
               sizeBytes: payload.size ?? null,

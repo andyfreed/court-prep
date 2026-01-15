@@ -80,8 +80,8 @@ model Document {
   caseId        String
   title         String
   blobUrl       String
-  openaiFileId  String
-  vectorStoreId String
+  openaiFileId  String?
+  vectorStoreId String?
   mimeType      String?
   size          Int?
   createdAt     DateTime @default(now())
