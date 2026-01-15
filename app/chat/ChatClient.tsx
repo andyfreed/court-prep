@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -29,6 +30,7 @@ type ChatClientProps = {
   caseId: string;
   threadId: string;
   threadTitle: string;
+  threads: Array<{ id: string; title: string }>;
   initialMessages: ChatMessage[];
 };
 
@@ -298,8 +300,10 @@ export default function ChatClient({
   caseId,
   threadId,
   threadTitle,
+  threads,
   initialMessages,
 }: ChatClientProps) {
+  const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -310,10 +314,7 @@ export default function ChatClient({
   const abortRef = useRef<AbortController | null>(null);
   const lastUserMessageRef = useRef<string | null>(null);
 
-  const threadList = useMemo(
-    () => [{ id: threadId, title: threadTitle }],
-    [threadId, threadTitle],
-  );
+  const threadList = useMemo(() => threads, [threads]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -457,19 +458,76 @@ export default function ChatClient({
     }
   }
 
+  async function handleCreateThread() {
+    const response = await fetch("/api/threads/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caseId }),
+    });
+    if (!response.ok) {
+      setError("Failed to create a new chat.");
+      return;
+    }
+    const payload = (await response.json()) as { thread?: { id: string } };
+    if (payload.thread?.id) {
+      router.push(`/chat?threadId=${payload.thread.id}`);
+      router.refresh();
+    }
+  }
+
+  async function handleDeleteThread(targetThreadId: string) {
+    const confirmed = window.confirm("Delete this chat? This cannot be undone.");
+    if (!confirmed) return;
+    const response = await fetch("/api/threads/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId: targetThreadId }),
+    });
+    if (!response.ok) {
+      setError("Failed to delete the chat.");
+      return;
+    }
+    const payload = (await response.json()) as { nextThreadId?: string };
+    const next = payload.nextThreadId ?? "";
+    if (next) {
+      router.push(`/chat?threadId=${next}`);
+      router.refresh();
+    }
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-[240px_1fr] h-[calc(100vh-120px)]">
       <aside className="hidden rounded-xl border bg-card p-4 lg:block">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Threads
-        </h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Threads
+          </h2>
+          <Button type="button" size="sm" variant="outline" onClick={handleCreateThread}>
+            New
+          </Button>
+        </div>
         <div className="mt-3 space-y-2">
           {threadList.map((thread) => (
             <div
               key={thread.id}
-              className="rounded-lg border bg-background px-3 py-2 text-sm font-medium"
+              className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm font-medium ${
+                thread.id === threadId ? "bg-card" : "bg-background"
+              }`}
             >
-              {thread.title}
+              <button
+                type="button"
+                className="flex-1 text-left"
+                onClick={() => router.push(`/chat?threadId=${thread.id}`)}
+              >
+                {thread.title}
+              </button>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => handleDeleteThread(thread.id)}
+              >
+                Delete
+              </button>
             </div>
           ))}
         </div>

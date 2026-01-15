@@ -34,5 +34,6 @@ export const config = {
     "/api/chat",
     "/api/documents/:path*",
     "/api/jobs/:path*",
+    "/api/threads/:path*",
   ],
 };
