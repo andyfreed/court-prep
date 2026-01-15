@@ -2,6 +2,8 @@ import { prisma } from "@/lib/db";
 import { getOrCreateCase } from "@/lib/cases";
 import UploadForm from "./UploadForm";
 
+export const dynamic = "force-dynamic";
+
 function formatBytes(bytes: number | null) {
   if (!bytes) return "Unknown size";
   const units = ["B", "KB", "MB", "GB"];
