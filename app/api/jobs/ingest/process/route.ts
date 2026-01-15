@@ -11,6 +11,7 @@ import type { DocumentIngestStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { ensureVectorStore, getOrCreateCase } from "@/lib/cases";
 import { createResponses, getOpenAI } from "@/lib/openai";
+import { embedTexts, resolveEmbeddingStorage } from "@/lib/embeddings";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -23,8 +24,14 @@ type ProcessRequest = {
   jobIds?: string[];
 };
 
+type ExtractedPage = {
+  pageNumber: number | null;
+  text: string;
+};
+
 type ExtractResult = {
   text: string;
+  pages: ExtractedPage[];
   warnings?: string[];
 };
 
@@ -79,8 +86,18 @@ async function extractTextFromBuffer(params: {
 
   if (ext === "pdf") {
     try {
-      const data = await pdfParse(params.buffer);
-      return { text: data.text };
+      const pages: ExtractedPage[] = [];
+      const data = await pdfParse(params.buffer, {
+        pagerender: async (pageData) => {
+          const textContent = await pageData.getTextContent();
+          const pageText = textContent.items
+            .map((item) => ("str" in item ? String(item.str) : ""))
+            .join(" ");
+          pages.push({ pageNumber: pageData.pageIndex + 1, text: pageText });
+          return pageText;
+        },
+      });
+      return { text: data.text, pages };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/password|encrypted/i.test(message)) {
@@ -92,20 +109,23 @@ async function extractTextFromBuffer(params: {
 
   if (ext === "docx") {
     const data = await mammoth.extractRawText({ buffer: params.buffer });
-    return { text: data.value };
+    return { text: data.value, pages: [{ pageNumber: null, text: data.value }] };
   }
 
   if (["txt", "md", "rtf"].includes(ext)) {
-    return { text: params.buffer.toString("utf-8") };
+    const text = params.buffer.toString("utf-8");
+    return { text, pages: [{ pageNumber: null, text }] };
   }
 
   if (ext === "html" || ext === "htm") {
     const html = params.buffer.toString("utf-8");
-    return { text: htmlToText(html, { wordwrap: false }) };
+    const text = htmlToText(html, { wordwrap: false });
+    return { text, pages: [{ pageNumber: null, text }] };
   }
 
   if (ext === "csv") {
-    return { text: params.buffer.toString("utf-8") };
+    const text = params.buffer.toString("utf-8");
+    return { text, pages: [{ pageNumber: null, text }] };
   }
 
   if (ext === "eml") {
@@ -120,7 +140,8 @@ async function extractTextFromBuffer(params: {
     ]
       .filter(Boolean)
       .join("\n");
-    return { text: [headers, body].filter(Boolean).join("\n\n") };
+    const text = [headers, body].filter(Boolean).join("\n\n");
+    return { text, pages: [{ pageNumber: null, text }] };
   }
 
   if (ext === "msg") {
@@ -148,7 +169,8 @@ async function extractTextFromBuffer(params: {
     ]
       .filter(Boolean)
       .join("\n");
-    return { text: [headers, body].filter(Boolean).join("\n\n") };
+    const text = [headers, body].filter(Boolean).join("\n\n");
+    return { text, pages: [{ pageNumber: null, text }] };
   }
 
   if (isImageExtension(ext)) {
@@ -173,10 +195,44 @@ async function extractTextFromBuffer(params: {
       45000,
       "ocr",
     );
-    return { text: (response as { output_text?: string }).output_text ?? "" };
+    const text = (response as { output_text?: string }).output_text ?? "";
+    return { text, pages: [{ pageNumber: null, text }] };
   }
 
   throw new Error(`Unsupported file type: .${ext || "unknown"}`);
+}
+
+function chunkText(text: string, chunkSize: number, overlap: number) {
+  const chunks: string[] = [];
+  if (!text) return chunks;
+  let start = 0;
+  while (start < text.length) {
+    const end = Math.min(start + chunkSize, text.length);
+    const chunk = text.slice(start, end).trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+    if (end === text.length) break;
+    start = Math.max(0, end - overlap);
+  }
+  return chunks;
+}
+
+function buildChunks(pages: ExtractedPage[]) {
+  const result: Array<{ pageNumber: number | null; chunkIndex: number; text: string }> = [];
+  let chunkIndex = 0;
+  for (const page of pages) {
+    const pageChunks = chunkText(page.text, 1000, 150);
+    for (const text of pageChunks) {
+      result.push({
+        pageNumber: page.pageNumber,
+        chunkIndex,
+        text,
+      });
+      chunkIndex += 1;
+    }
+  }
+  return result;
 }
 
 async function expandZip(params: {
@@ -237,6 +293,21 @@ async function processJob(jobId: string) {
   if (!job) return;
 
   try {
+    const existingDocument = job.documentId
+      ? await prisma.document.findUnique({ where: { id: job.documentId } })
+      : null;
+    const document =
+      existingDocument ??
+      (await prisma.document.create({
+        data: {
+          caseId: job.caseId,
+          title: job.filename,
+          blobUrl: job.blobUrl,
+          mimeType: job.mimeType ?? null,
+          size: job.sizeBytes ?? null,
+        },
+      }));
+
     await prisma.documentIngestJob.update({
       where: { id: job.id },
       data: { status: "extracting", error: null },
@@ -289,6 +360,35 @@ async function processJob(jobId: string) {
       data: { status: "indexing" },
     });
 
+    await prisma.documentChunk.deleteMany({ where: { documentId: document.id } });
+    const chunks = buildChunks(extracted.pages);
+    if (chunks.length > 0) {
+      const embeddings = await embedTexts(chunks.map((chunk) => chunk.text));
+      const storage = await resolveEmbeddingStorage();
+
+      for (let i = 0; i < chunks.length; i += 1) {
+        const chunk = chunks[i];
+        const embedding = embeddings[i];
+        const created = await prisma.documentChunk.create({
+          data: {
+            caseId: job.caseId,
+            documentId: document.id,
+            pageNumber: chunk.pageNumber,
+            chunkIndex: chunk.chunkIndex,
+            text: chunk.text,
+            embeddingJson: embedding,
+          },
+        });
+
+        if (storage === "vector") {
+          const vectorLiteral = `[${embedding.join(",")}]`;
+          await prisma.$executeRawUnsafe(
+            `UPDATE "DocumentChunk" SET "embedding" = '${vectorLiteral}'::vector WHERE "id" = '${created.id}'`,
+          );
+        }
+      }
+    }
+
     const { vectorStoreId } = await ensureVectorStore(job.caseId);
     const file = new File([extracted.text], `${job.filename}.txt`, {
       type: "text/plain",
@@ -318,33 +418,20 @@ async function processJob(jobId: string) {
       "vector_store_attach",
     );
 
-    const document =
-      job.documentId
-        ? await prisma.document.update({
-            where: { id: job.documentId },
-            data: {
-              openaiFileId: openaiFile.id,
-              vectorStoreId,
-            },
-          })
-        : await prisma.document.create({
-            data: {
-              caseId: job.caseId,
-              title: job.filename,
-              blobUrl: job.blobUrl,
-              openaiFileId: openaiFile.id,
-              vectorStoreId,
-              mimeType: job.mimeType ?? null,
-              size: job.sizeBytes ?? null,
-            },
-          });
+    const updatedDocument = await prisma.document.update({
+      where: { id: document.id },
+      data: {
+        openaiFileId: openaiFile.id,
+        vectorStoreId,
+      },
+    });
 
     await prisma.documentIngestJob.update({
       where: { id: job.id },
       data: {
         status: "done",
         openaiFileId: openaiFile.id,
-        documentId: document.id,
+        documentId: updatedDocument.id,
       },
     });
   } catch (error) {
