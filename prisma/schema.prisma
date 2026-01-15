@@ -67,6 +67,9 @@ model Case {
   documents     Document[]
   ingestJobs    DocumentIngestJob[]
   timeline      TimelineEvent[]
+  entities      CaseEntity[]
+  facts         CaseFact[]
+  obligations  Obligation[]
   insights      Insight[]
   lawyerNotes   LawyerNote[]
   chatThreads   ChatThread[]
@@ -86,6 +89,7 @@ model Document {
   size          Int?
   createdAt     DateTime @default(now())
   ingestJob     DocumentIngestJob?
+  chunks        DocumentChunk[]
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 }
@@ -94,15 +98,116 @@ model TimelineEvent {
   id         String   @id @default(cuid())
   caseId     String
   occurredAt DateTime?
+  eventDate  DateTime?
   precision  String
   title      String
   summary    String
   category   String
   people     String[]
   sourceRef  Json
+  citationsJson Json?
+  confidence String?
   createdAt  DateTime @default(now())
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+}
+
+enum CaseEntityType {
+  person
+  child
+  attorney
+  judge
+  org
+  address
+}
+
+enum CaseFactType {
+  parenting_rule
+  custody
+  support
+  restriction
+  definition
+  asset
+  debt
+  schedule
+  education
+  medical
+  travel
+  communication
+  other
+}
+
+enum ObligationType {
+  payment
+  exchange
+  notice
+  filing
+  other
+}
+
+model CaseEntity {
+  id            String         @id @default(cuid())
+  caseId        String
+  type          CaseEntityType
+  name          String
+  attributesJson Json?
+  createdAt     DateTime       @default(now())
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, type])
+}
+
+model CaseFact {
+  id            String       @id @default(cuid())
+  caseId        String
+  type          CaseFactType
+  key           String
+  valueJson     Json
+  citationsJson Json
+  confidence    String
+  updatedAt     DateTime     @updatedAt
+  createdAt     DateTime     @default(now())
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, type])
+  @@index([caseId, key])
+}
+
+model Obligation {
+  id            String         @id @default(cuid())
+  caseId        String
+  obligationType ObligationType
+  dueDate       DateTime?
+  recurrence    String?
+  description   String
+  citationsJson Json
+  confidence    String
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, obligationType])
+}
+
+model DocumentChunk {
+  id            String   @id @default(cuid())
+  caseId        String
+  documentId    String
+  pageNumber    Int?
+  chunkIndex    Int
+  text          String
+  embedding     Unsupported("vector")?
+  embeddingJson Json?
+  createdAt     DateTime @default(now())
+
+  case     Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, documentId])
+  @@index([documentId, pageNumber])
 }
 
 model Insight {
