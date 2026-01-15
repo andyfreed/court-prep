@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { upload } from "@vercel/blob/client";
 
 import { Button } from "@/components/ui/button";
 
@@ -15,6 +16,7 @@ export default function UploadForm({ caseId }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -25,30 +27,31 @@ export default function UploadForm({ caseId }: UploadFormProps) {
       return;
     }
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("caseId", caseId);
-    if (title.trim()) formData.append("title", title.trim());
-
     try {
       setIsUploading(true);
-      const response = await fetch("/api/documents/upload", {
-        method: "POST",
-        body: formData,
-      });
+      setProgress(0);
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null;
-        throw new Error(payload?.error ?? "Upload failed.");
-      }
+      await upload(`cases/${caseId}/${file.name}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/documents/upload",
+        clientPayload: JSON.stringify({
+          caseId,
+          title: title.trim() || undefined,
+          originalName: file.name,
+          size: file.size,
+          mimeType: file.type || undefined,
+        }),
+        multipart: file.size > 10 * 1024 * 1024,
+        onUploadProgress: (event) => setProgress(event.percentage),
+      });
 
       setTitle("");
       setFile(null);
+      setProgress(null);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
+      setProgress(null);
     } finally {
       setIsUploading(false);
     }
@@ -79,6 +82,11 @@ export default function UploadForm({ caseId }: UploadFormProps) {
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />
       </div>
+      {progress !== null ? (
+        <div className="text-xs text-muted-foreground">
+          Uploading... {Math.round(progress)}%
+        </div>
+      ) : null}
       {error ? <p className="text-sm text-red-500">{error}</p> : null}
       <Button type="submit" disabled={isUploading}>
         {isUploading ? "Uploading..." : "Upload document"}

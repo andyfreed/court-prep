@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { put } from "@vercel/blob";
+import { handleUpload } from "@vercel/blob";
 
 import { prisma } from "@/lib/db";
 import { ensureVectorStore } from "@/lib/cases";
@@ -7,45 +7,89 @@ import { getOpenAI } from "@/lib/openai";
 
 export const runtime = "nodejs";
 
+type UploadPayload = {
+  caseId?: string;
+  title?: string;
+  originalName?: string;
+  size?: number;
+  mimeType?: string;
+};
+
+function parsePayload(payload: string | null): UploadPayload {
+  if (!payload) return {};
+  try {
+    return JSON.parse(payload) as UploadPayload;
+  } catch {
+    return {};
+  }
+}
+
+function getFileName(pathname: string, fallback: string) {
+  const parts = pathname.split("/");
+  return parts[parts.length - 1] || fallback;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("file");
-    const title = (formData.get("title") as string | null) ?? undefined;
-    const caseId = (formData.get("caseId") as string | null) ?? undefined;
+    const body = await req.json();
 
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: "Missing file upload." }, { status: 400 });
-    }
+    const result = await handleUpload({
+      request: req,
+      body,
+      onBeforeGenerateToken: async (_pathname, clientPayload) => {
+        const payload = parsePayload(clientPayload);
+        return {
+          tokenPayload: JSON.stringify(payload),
+          addRandomSuffix: true,
+          allowOverwrite: false,
+          maximumSizeInBytes: 200 * 1024 * 1024,
+        };
+      },
+      onUploadCompleted: async ({ blob, tokenPayload }) => {
+        const payload = parsePayload(tokenPayload ?? null);
+        try {
+          const { caseRecord, vectorStoreId } = await ensureVectorStore(
+            payload.caseId,
+          );
+          const fileName = getFileName(blob.pathname, "upload.bin");
+          const response = await fetch(blob.downloadUrl ?? blob.url);
 
-    const { caseRecord, vectorStoreId } = await ensureVectorStore(caseId);
+          if (!response.ok) {
+            throw new Error("Failed to fetch uploaded blob.");
+          }
 
-    const blob = await put(`cases/${caseRecord.id}/${file.name}`, file, {
-      access: "public",
-    });
+          const arrayBuffer = await response.arrayBuffer();
+          const file = new File([arrayBuffer], payload.originalName ?? fileName, {
+            type: payload.mimeType ?? blob.contentType ?? "application/octet-stream",
+          });
 
-    const openaiFile = await getOpenAI().files.create({
-      file,
-      purpose: "assistants",
-    });
+          const openaiFile = await getOpenAI().files.create({
+            file,
+            purpose: "assistants",
+          });
 
-    await getOpenAI().vectorStores.files.create(vectorStoreId, {
-      file_id: openaiFile.id,
-    });
+          await getOpenAI().vectorStores.files.create(vectorStoreId, {
+            file_id: openaiFile.id,
+          });
 
-    const document = await prisma.document.create({
-      data: {
-        caseId: caseRecord.id,
-        title: title ?? file.name,
-        blobUrl: blob.url,
-        openaiFileId: openaiFile.id,
-        vectorStoreId,
-        mimeType: file.type || null,
-        size: file.size ?? null,
+          await prisma.document.create({
+            data: {
+              caseId: caseRecord.id,
+              title: payload.title ?? payload.originalName ?? fileName,
+              blobUrl: blob.url,
+              openaiFileId: openaiFile.id,
+              vectorStoreId,
+              mimeType: payload.mimeType ?? blob.contentType ?? null,
+              size: payload.size ?? null,
+            },
+          });
+        } catch (error) {
+          console.error("Upload completion failed:", error);
+        }
       },
     });
 
-    return NextResponse.json({ document });
+    return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
       { error: "Upload failed.", detail: String(error) },
