@@ -67,9 +67,18 @@ export async function POST(req: NextRequest) {
               blobUrl: blob.url,
               mimeType: payload.mimeType ?? blob.contentType ?? null,
               sizeBytes: payload.size ?? null,
-              status: "uploaded",
+              status: "queued",
             },
           });
+          console.log(
+            JSON.stringify({
+              event: "ingest_job_created",
+              caseId: caseRecord.id,
+              documentId: document.id,
+              filename: payload.title ?? payload.originalName ?? fileName,
+              status: "queued",
+            }),
+          );
         } catch (error) {
           console.error("Upload completion failed:", error);
         }

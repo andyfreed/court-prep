@@ -23,6 +23,19 @@ export default async function DocumentsPage() {
     where: { caseId: caseRecord.id, openaiFileId: { not: null } },
     orderBy: { createdAt: "desc" },
   });
+  const uploadedDocuments = await prisma.document.findMany({
+    where: { caseId: caseRecord.id, openaiFileId: null },
+    orderBy: { createdAt: "desc" },
+  });
+  const ingestJobs = await prisma.documentIngestJob.findMany({
+    where: { caseId: caseRecord.id },
+    orderBy: { updatedAt: "desc" },
+  });
+  const jobByDocumentId = new Map(
+    ingestJobs
+      .filter((job) => job.documentId)
+      .map((job) => [job.documentId!, job]),
+  );
 
   return (
     <section className="space-y-6">
@@ -34,6 +47,48 @@ export default async function DocumentsPage() {
       </div>
       <UploadForm caseId={caseRecord.id} />
       <ProcessingUploads caseId={caseRecord.id} />
+      <div className="space-y-3">
+        <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Uploaded files (not indexed yet)
+        </div>
+        {uploadedDocuments.length === 0 ? (
+          <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+            No unindexed uploads.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {uploadedDocuments.map((doc) => {
+              const job = jobByDocumentId.get(doc.id);
+              return (
+                <div
+                  key={doc.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-4 text-sm"
+                >
+                  <div className="space-y-1">
+                    <div className="font-medium text-foreground">{doc.title}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {doc.mimeType ?? "Unknown type"} | {formatBytes(doc.size)} |{" "}
+                      {doc.createdAt.toLocaleString()}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Status: {job?.status ?? "queued"}
+                      {job?.error ? ` - ${job.error}` : ""}
+                    </div>
+                  </div>
+                  <a
+                    className="text-sm font-medium text-primary hover:underline"
+                    href={doc.blobUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
       <div className="space-y-3">
         <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Indexed files

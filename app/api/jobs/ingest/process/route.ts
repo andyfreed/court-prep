@@ -224,7 +224,7 @@ async function expandZip(params: {
         mimeType: String(contentType),
         sizeBytes: entryBuffer.length,
         blobUrl: blob.url,
-        status: "uploaded",
+        status: "queued",
       },
     });
   }
@@ -367,7 +367,7 @@ export async function POST(req: NextRequest) {
       : {
           caseId: caseRecord.id,
           status: {
-            in: ["uploaded", "ready_to_index", "error"] as DocumentIngestStatus[],
+            in: ["queued", "uploaded", "ready_to_index", "error"] as DocumentIngestStatus[],
           },
         };
 
