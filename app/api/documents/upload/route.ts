@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     const { caseRecord, vectorStoreId } = await ensureVectorStore(caseId);
 
     const blob = await put(`cases/${caseRecord.id}/${file.name}`, file, {
-      access: "private",
+      access: "public",
     });
 
     const openaiFile = await openai.files.create({
