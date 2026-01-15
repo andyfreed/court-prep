@@ -1,30 +1,82 @@
 import { z } from "zod";
 
-export const SourceRefSchema = z.object({
-  ref_type: z.enum([
-    "document",
-    "transcript_message",
-    "email",
-    "timeline_event",
-    "lawyer_note",
-    "user_note",
-  ]),
+const LocatorSchema = z.object({
+  label: z.string(),
+  page_start: z.number().nullable(),
+  page_end: z.number().nullable(),
+  section: z.string().nullable(),
+  quote: z.string().nullable(),
+  timestamp: z.string().nullable(),
+});
+
+const BaseSourceRef = z.object({
   case_id: z.string(),
-  document_version_id: z.string().nullable(),
-  transcript_message_ids: z.array(z.string()).nullable(),
-  email_id: z.string().nullable(),
-  timeline_event_id: z.string().nullable(),
-  lawyer_note_id: z.string().nullable(),
-  locator: z.object({
-    label: z.string(),
-    page_start: z.number().nullable(),
-    page_end: z.number().nullable(),
-    section: z.string().nullable(),
-    quote: z.string().nullable(),
-    timestamp: z.string().nullable(),
-  }),
+  locator: LocatorSchema,
   confidence: z.enum(["high", "medium", "low"]),
 });
+
+const DocumentSourceRef = BaseSourceRef.extend({
+  ref_type: z.literal("document"),
+  document_version_id: z.string(),
+  transcript_message_ids: z.null(),
+  email_id: z.null(),
+  timeline_event_id: z.null(),
+  lawyer_note_id: z.null(),
+});
+
+const TranscriptSourceRef = BaseSourceRef.extend({
+  ref_type: z.literal("transcript_message"),
+  document_version_id: z.null(),
+  transcript_message_ids: z.array(z.string()).min(1),
+  email_id: z.null(),
+  timeline_event_id: z.null(),
+  lawyer_note_id: z.null(),
+});
+
+const EmailSourceRef = BaseSourceRef.extend({
+  ref_type: z.literal("email"),
+  document_version_id: z.null(),
+  transcript_message_ids: z.null(),
+  email_id: z.string(),
+  timeline_event_id: z.null(),
+  lawyer_note_id: z.null(),
+});
+
+const TimelineSourceRef = BaseSourceRef.extend({
+  ref_type: z.literal("timeline_event"),
+  document_version_id: z.null(),
+  transcript_message_ids: z.null(),
+  email_id: z.null(),
+  timeline_event_id: z.string(),
+  lawyer_note_id: z.null(),
+});
+
+const LawyerNoteSourceRef = BaseSourceRef.extend({
+  ref_type: z.literal("lawyer_note"),
+  document_version_id: z.null(),
+  transcript_message_ids: z.null(),
+  email_id: z.null(),
+  timeline_event_id: z.null(),
+  lawyer_note_id: z.string(),
+});
+
+const UserNoteSourceRef = BaseSourceRef.extend({
+  ref_type: z.literal("user_note"),
+  document_version_id: z.null(),
+  transcript_message_ids: z.null(),
+  email_id: z.null(),
+  timeline_event_id: z.null(),
+  lawyer_note_id: z.null(),
+});
+
+export const SourceRefSchema = z.discriminatedUnion("ref_type", [
+  DocumentSourceRef,
+  TranscriptSourceRef,
+  EmailSourceRef,
+  TimelineSourceRef,
+  LawyerNoteSourceRef,
+  UserNoteSourceRef,
+]);
 
 export const ChatResponseSchema = z.object({
   answer: z.object({
