@@ -303,7 +303,7 @@ export default function ChatClient({
   const [error, setError] = useState<string | null>(null);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const threadList = useMemo(
     () => [{ id: threadId, title: threadTitle }],
@@ -311,21 +311,25 @@ export default function ChatClient({
   );
 
   useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+
     function handleScroll() {
-      const threshold = 160;
-      const scrollPosition = window.innerHeight + window.scrollY;
-      const pageHeight = document.documentElement.scrollHeight;
-      setIsNearBottom(pageHeight - scrollPosition < threshold);
+      const threshold = 180;
+      const { scrollTop, scrollHeight, clientHeight } = list;
+      setIsNearBottom(scrollHeight - scrollTop - clientHeight < threshold);
     }
 
     handleScroll();
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
+    list.addEventListener("scroll", handleScroll, { passive: true });
+    return () => list.removeEventListener("scroll", handleScroll);
   }, []);
 
   useEffect(() => {
     if (isNearBottom) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      const list = listRef.current;
+      if (!list) return;
+      list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
     }
   }, [messages, isNearBottom]);
 
@@ -441,8 +445,8 @@ export default function ChatClient({
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
-      <aside className="rounded-xl border bg-card p-4">
+    <div className="grid gap-6 lg:grid-cols-[240px_1fr] h-[calc(100vh-120px)]">
+      <aside className="hidden rounded-xl border bg-card p-4 lg:block">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Threads
         </h2>
@@ -458,7 +462,7 @@ export default function ChatClient({
         </div>
       </aside>
 
-      <section className="space-y-6">
+      <section className="flex min-h-0 flex-col space-y-4">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold">Case Chat</h1>
           <p className="text-muted-foreground">
@@ -466,7 +470,10 @@ export default function ChatClient({
           </p>
         </div>
 
-        <div className="space-y-6">
+        <div
+          ref={listRef}
+          className="flex-1 space-y-4 overflow-y-auto rounded-xl border bg-background p-4"
+        >
           {messages.length === 0 ? (
             <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
               No messages yet. Upload documents and ask a question to get started.
@@ -475,27 +482,29 @@ export default function ChatClient({
             messages.map((message) => (
               <div
                 key={message.id}
-                className={message.role === "user" ? "space-y-2" : "space-y-4"}
+                className={`flex flex-col gap-2 ${
+                  message.role === "user" ? "items-end" : "items-start"
+                }`}
               >
-                <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                   <span>
-                    {message.role === "user" ? "You" : "Assistant"} -{" "}
+                    {message.role === "user" ? "You" : "Assistant"} •{" "}
                     {new Date(message.createdAt).toLocaleString()}
                   </span>
                   <button
                     type="button"
-                    className="text-xs text-muted-foreground hover:text-foreground"
+                    className="text-[11px] text-muted-foreground hover:text-foreground"
                     onClick={() => handleCopy(message)}
                   >
                     {copiedId === message.id ? "Copied" : "Copy"}
                   </button>
                 </div>
                 {message.role === "user" ? (
-                  <div className="rounded-2xl border bg-card px-4 py-3 text-sm text-foreground">
+                  <div className="max-w-[85%] rounded-2xl bg-foreground px-4 py-3 text-sm text-background shadow-sm">
                     {(message.content as { text?: string })?.text ?? ""}
                   </div>
                 ) : (
-                  <>
+                  <div className="max-w-[85%] rounded-2xl border bg-card px-4 py-3 shadow-sm">
                     {(message.content as { type?: string })?.type === "error" ? (
                       <ErrorMessage
                         message={(message.content as { message?: string })?.message ?? ""}
@@ -503,7 +512,7 @@ export default function ChatClient({
                     ) : (
                       <AssistantMessage response={message.content as ChatResponse} />
                     )}
-                  </>
+                  </div>
                 )}
               </div>
             ))
@@ -515,15 +524,23 @@ export default function ChatClient({
             <button
               type="button"
               className="rounded-full border bg-background px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+              onClick={() => {
+                const list = listRef.current;
+                if (list) {
+                  list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+                }
+              }}
             >
-              Jump to bottom
+              Jump to latest
             </button>
           </div>
         ) : null}
-        <form className="space-y-3" onSubmit={handleSend}>
+        <form
+          className="sticky bottom-0 space-y-3 border-t bg-background/95 p-4 backdrop-blur"
+          onSubmit={handleSend}
+        >
           <textarea
-            className="min-h-[120px] w-full rounded-lg border bg-background px-3 py-2 text-sm"
+            className="min-h-[100px] w-full resize-none rounded-lg border bg-background px-3 py-2 text-sm"
             placeholder="Ask a question about custody schedules, agreements, or evidence..."
             value={input}
             onChange={(event) => setInput(event.target.value)}
@@ -533,7 +550,6 @@ export default function ChatClient({
             {isSending ? "Sending..." : "Send"}
           </Button>
         </form>
-        <div ref={bottomRef} />
       </section>
     </div>
   );
