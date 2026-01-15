@@ -4,5 +4,6 @@
       "main": true,
       "preview": false
     }
-  }
+  },
+  "buildCommand": "npm run migrate:deploy && npm run build"
 }
