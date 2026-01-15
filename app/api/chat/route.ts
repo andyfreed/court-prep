@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { ensureVectorStore, getOrCreateDefaultThread } from "@/lib/cases";
-import { buildResponsesParams, getOpenAI } from "@/lib/openai";
+import { createResponses, getOpenAI } from "@/lib/openai";
 import { prisma } from "@/lib/db";
 import {
   ChatResponseSchema,
@@ -280,8 +280,8 @@ async function runResponse(params: {
 
   const response = await withTimeout(
     (signal) =>
-      getOpenAI().responses.create(
-        buildResponsesParams({
+      createResponses(
+        {
           model: "gpt-5.2-pro",
           instructions: params.instructions,
           input: params.input,
@@ -289,7 +289,7 @@ async function runResponse(params: {
           tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
           include,
           max_output_tokens: 1200,
-        }) as any,
+        } as any,
         { signal },
       ),
     params.timeoutMs,

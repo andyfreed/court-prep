@@ -10,7 +10,7 @@ import type { DocumentIngestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db";
 import { ensureVectorStore, getOrCreateCase } from "@/lib/cases";
-import { buildResponsesParams, getOpenAI } from "@/lib/openai";
+import { createResponses, getOpenAI } from "@/lib/openai";
 
 export const runtime = "nodejs";
 
@@ -144,8 +144,8 @@ async function extractTextFromBuffer(params: {
   if (isImageExtension(ext)) {
     const response = await withTimeout(
       (signal) =>
-        getOpenAI().responses.create(
-          buildResponsesParams({
+        createResponses(
+          {
             model: "gpt-4o-mini",
             input: [
               {
@@ -157,7 +157,7 @@ async function extractTextFromBuffer(params: {
               },
             ],
             max_output_tokens: 1200,
-          }) as any,
+          } as any,
           { signal },
         ),
       45000,
