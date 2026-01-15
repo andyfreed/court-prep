@@ -12,6 +12,15 @@ type ChatMessage = {
   createdAt: string;
 };
 
+type DocumentListEntry = {
+  document_version_id: string;
+  title: string;
+  fileName: string;
+  docType: string | null;
+  uploadedAt: string;
+  description: string | null;
+};
+
 type ChatClientProps = {
   caseId: string;
   threadId: string;
@@ -215,6 +224,45 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
   );
 }
 
+function DocumentsListMessage({ documents }: { documents: DocumentListEntry[] }) {
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        Documents On File
+      </h3>
+      {documents.length === 0 ? (
+        <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+          No documents uploaded yet.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {documents.map((doc) => (
+            <div key={doc.document_version_id} className="rounded-lg border bg-card p-4">
+              <div className="text-sm font-medium text-foreground">{doc.title}</div>
+              <div className="text-xs text-muted-foreground">
+                {doc.fileName} · {doc.docType ?? "Unknown type"} ·{" "}
+                {new Date(doc.uploadedAt).toLocaleString()}
+              </div>
+              <a
+                className="mt-2 inline-flex text-xs font-medium text-primary hover:underline"
+                href={`/documents/${doc.document_version_id}`}
+              >
+                Open
+              </a>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isDocumentListQuery(message: string) {
+  return /what documents are on file|documents on file|list documents|what docs do we have/i.test(
+    message,
+  );
+}
+
 export default function ChatClient({
   caseId,
   threadId,
@@ -250,10 +298,39 @@ export default function ChatClient({
     setInput("");
 
     try {
+      let documentsList: DocumentListEntry[] | null = null;
+
+      if (isDocumentListQuery(trimmed)) {
+        const listResponse = await fetch(`/api/documents/list?caseId=${caseId}`);
+        if (!listResponse.ok) {
+          throw new Error("Failed to load document list.");
+        }
+        const listPayload = (await listResponse.json()) as {
+          documents: DocumentListEntry[];
+        };
+        documentsList = listPayload.documents ?? [];
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `docs-${Date.now()}`,
+            role: "assistant",
+            content: { type: "documents_list", documents: documentsList },
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ caseId, threadId, message: trimmed }),
+        body: JSON.stringify({
+          caseId,
+          threadId,
+          message: documentsList
+            ? "Based on the documents on file, what is missing or should I upload next?"
+            : trimmed,
+          documentsList: documentsList ?? undefined,
+        }),
       });
 
       if (!response.ok) {
@@ -323,7 +400,19 @@ export default function ChatClient({
                     {(message.content as { text?: string })?.text ?? ""}
                   </div>
                 ) : (
-                  <AssistantMessage response={message.content as ChatResponse} />
+                  <>
+                    {(message.content as { type?: string })?.type ===
+                    "documents_list" ? (
+                      <DocumentsListMessage
+                        documents={
+                          (message.content as { documents?: DocumentListEntry[] })
+                            ?.documents ?? []
+                        }
+                      />
+                    ) : (
+                      <AssistantMessage response={message.content as ChatResponse} />
+                    )}
+                  </>
                 )}
               </div>
             ))

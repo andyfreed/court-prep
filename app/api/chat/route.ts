@@ -23,6 +23,18 @@ type SearchPlan = {
   should_create_lawyer_note: boolean;
 };
 
+type RetrievedSource = {
+  document_version_id: string;
+  label: string;
+  locator: {
+    page_start?: number | null;
+    page_end?: number | null;
+    section?: string | null;
+    quote?: string | null;
+  };
+  excerpt?: string | null;
+};
+
 function extractJson(text: string) {
   const first = text.indexOf("{");
   const last = text.lastIndexOf("}");
@@ -42,6 +54,49 @@ function needsCitationRetry(parsed: ChatResponse) {
     (item) => item.source_refs.length === 0,
   );
   return helpsMissing || hurtsMissing;
+}
+
+function isDocumentContentQuestion(message: string) {
+  return /(what does|what do|say about|agreement|order|policy|report|evidence)/i.test(
+    message,
+  );
+}
+
+function isContestedTopic(message: string) {
+  return /custody|holiday|schedule|support|abuse|violence|relocation|parenting/i.test(
+    message,
+  );
+}
+
+function validateCitationCoverage(params: {
+  parsed: ChatResponse;
+  hasFiles: boolean;
+  message: string;
+}) {
+  const { parsed, hasFiles, message } = params;
+  if (hasFiles && !parsed.meta.used_retrieval) return true;
+  if (isDocumentContentQuestion(message) && parsed.evidence.length === 0) {
+    return true;
+  }
+  if (isContestedTopic(message) && parsed.what_hurts.length === 0) return true;
+  const helpsMissing = parsed.what_helps.some(
+    (item) => item.source_refs.length === 0,
+  );
+  const hurtsMissing = parsed.what_hurts.some(
+    (item) => item.source_refs.length === 0,
+  );
+  return helpsMissing || hurtsMissing;
+}
+
+function extractFileSearchResults(response: any) {
+  const output = Array.isArray(response?.output) ? response.output : [];
+  const results: any[] = [];
+  for (const item of output) {
+    if (item?.type === "file_search_call" && Array.isArray(item?.results)) {
+      results.push(...item.results);
+    }
+  }
+  return results;
 }
 
 async function runResponse(params: {
@@ -68,16 +123,39 @@ async function runResponse(params: {
     include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
   });
 
-  return response.output_text ?? "";
+  return {
+    text: response.output_text ?? "",
+    results: extractFileSearchResults(response),
+  };
+}
+
+async function runRetrieval(params: { message: string; vectorStoreId: string }) {
+  const retrieval = await runResponse({
+    instructions:
+      "Run file_search and return ONLY the word OK. Do not include any JSON.",
+    input: params.message,
+    vectorStoreId: params.vectorStoreId,
+    requireFileSearch: true,
+  });
+  return retrieval.results;
+}
+
+function parseChatResponse(text: string) {
+  try {
+    const json = extractJson(text);
+    return ChatResponseSchema.safeParse(JSON.parse(json));
+  } catch {
+    return ChatResponseSchema.safeParse({});
+  }
 }
 
 async function buildSearchPlan(message: string) {
-  const planText = await runResponse({
+  const planResponse = await runResponse({
     instructions: SEARCH_PLAN_PROMPT,
     input: message,
   });
   try {
-    return JSON.parse(extractJson(planText)) as SearchPlan;
+    return JSON.parse(extractJson(planResponse.text)) as SearchPlan;
   } catch {
     return {
       search_queries: [message],
@@ -96,6 +174,16 @@ export async function POST(req: NextRequest) {
     const message = body?.message as string | undefined;
     const caseId = body?.caseId as string | undefined;
     const threadId = body?.threadId as string | undefined;
+    const documentsList = body?.documentsList as
+      | Array<{
+          document_version_id: string;
+          title: string;
+          fileName: string;
+          docType: string | null;
+          uploadedAt: string;
+          description: string | null;
+        }>
+      | undefined;
 
     if (!message) {
       return NextResponse.json({ error: "Missing message." }, { status: 400 });
@@ -175,47 +263,138 @@ export async function POST(req: NextRequest) {
     }
     const plan = await buildSearchPlan(message);
 
+    const documentsContext = documentsList?.length
+      ? `Documents on file (from DB): ${JSON.stringify(documentsList)}`
+      : "Documents on file (from DB): none provided";
+
+    const retrievalResults = await runRetrieval({
+      message,
+      vectorStoreId,
+    });
+
+    const retrievedSources: RetrievedSource[] = [];
+    if (retrievalResults.length > 0) {
+      const fileIds = Array.from(
+        new Set(
+          retrievalResults
+            .map((item: any) => item?.file_id)
+            .filter((id: string | undefined) => Boolean(id)),
+        ),
+      );
+      const docs = await prisma.document.findMany({
+        where: { openaiFileId: { in: fileIds } },
+      });
+      const docByFileId = new Map(docs.map((doc) => [doc.openaiFileId, doc]));
+
+      for (const result of retrievalResults) {
+        const doc = docByFileId.get(result.file_id);
+        if (!doc) continue;
+        retrievedSources.push({
+          document_version_id: doc.id,
+          label: doc.title,
+          locator: {
+            page_start: result?.page ?? null,
+            page_end: result?.page ?? null,
+            section: result?.section ?? null,
+            quote: result?.content?.text ?? null,
+          },
+          excerpt: result?.content?.text ?? null,
+        });
+      }
+    }
+
     const baseInput = [
       `Case ID: ${caseRecord.id}`,
       `SearchPlan: ${JSON.stringify(plan)}`,
+      documentsContext,
+      `RetrievedSources: ${JSON.stringify(retrievedSources)}`,
       `User question: ${message}`,
     ].join("\n\n");
 
-    const initialText = await runResponse({
-      instructions: MAIN_CHAT_SYSTEM_PROMPT,
+    const citationInstruction = [
+      MAIN_CHAT_SYSTEM_PROMPT,
+      "You MUST cite using SourceRef objects with document_version_id from RetrievedSources.",
+      "Do not cite filenames. Use only document_version_id values provided.",
+    ].join("\n");
+
+    const initialResponse = await runResponse({
+      instructions: citationInstruction,
       input: baseInput,
       vectorStoreId,
       requireFileSearch: true,
     });
 
-    const initialJson = extractJson(initialText);
-    let parsed = ChatResponseSchema.safeParse(JSON.parse(initialJson));
+    let parsed = parseChatResponse(initialResponse.text);
 
-    if (!parsed.success || needsCitationRetry(parsed.data)) {
+    if (
+      !parsed.success ||
+      needsCitationRetry(parsed.data) ||
+      validateCitationCoverage({
+        parsed: parsed.success ? parsed.data : ({} as ChatResponse),
+        hasFiles: hasIndexedFiles,
+        message,
+      })
+    ) {
       const enforcement = [
-        MAIN_CHAT_SYSTEM_PROMPT,
+        citationInstruction,
         "Your last answer lacked sufficient citations or valid JSON.",
         "Rewrite and attach SourceRef citations for every key factual claim.",
         "If you cannot cite, mark it 'uncited inference' and move it to uncertainties.",
         "Return ONLY valid JSON for ChatResponse.",
+        `RetrievedSources: ${JSON.stringify(retrievedSources)}`,
       ].join("\n");
 
-      const retryText = await runResponse({
+      const retryResponse = await runResponse({
         instructions: enforcement,
         input: baseInput,
         vectorStoreId,
         requireFileSearch: true,
       });
 
-      const retryJson = extractJson(retryText);
-      parsed = ChatResponseSchema.safeParse(JSON.parse(retryJson));
+      parsed = parseChatResponse(retryResponse.text);
     }
 
     if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Model output failed schema validation.", issues: parsed.error },
-        { status: 422 },
-      );
+      console.error("Chat response invalid:", initialResponse.text);
+      const failureResponse: ChatResponse = {
+        answer: {
+          summary: "Chat response failed validation.",
+          direct_answer:
+            "The assistant response could not be validated. Try rephrasing your question or try again.",
+          confidence: "low",
+          uncertainties: [
+            {
+              topic: "Response formatting",
+              why: "The model returned invalid JSON or missing citations.",
+              needed_sources: ["document"],
+            },
+          ],
+        },
+        evidence: [],
+        what_helps: [],
+        what_hurts: [],
+        next_steps: [
+          { action: "Retry the question.", owner: "user", priority: "medium" },
+        ],
+        questions_for_lawyer: [],
+        missing_or_requested_docs: [],
+        meta: {
+          used_retrieval: hasIndexedFiles,
+          retrieval_notes: "Model output invalid; see server logs for raw output.",
+          safety_note: "Neutral, document-grounded guidance only.",
+        },
+      };
+
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          role: "assistant",
+          content: failureResponse,
+        },
+      });
+
+      return NextResponse.json(failureResponse);
     }
 
     await prisma.chatMessage.create({

@@ -33,6 +33,16 @@ export default async function DocumentDetailPage({
           {searchParams?.page ? ` (page ${searchParams.page})` : ""}.
         </p>
       </div>
+      <div className="rounded-lg border bg-card p-4 text-sm">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Metadata
+        </div>
+        <div className="mt-2 space-y-1 text-sm text-foreground">
+          <div>Type: {document.mimeType ?? "Unknown"}</div>
+          <div>Size: {document.size ?? "Unknown"} bytes</div>
+          <div>Uploaded: {document.createdAt.toLocaleString()}</div>
+        </div>
+      </div>
       <a
         className="inline-flex items-center rounded-md border px-3 py-2 text-sm font-medium"
         href={document.blobUrl}
