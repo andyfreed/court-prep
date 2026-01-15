@@ -15,7 +15,7 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
   if (req.nextUrl.pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
-  return authMiddleware(req, event);
+  return authMiddleware(req as any, event);
 }
 
 export const config = {
