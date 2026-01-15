@@ -292,6 +292,8 @@ export default function ChatClient({
 
     setError(null);
     setIsSending(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 60000);
 
     const optimisticUser: ChatMessage = {
       id: `local-${Date.now()}`,
@@ -327,6 +329,7 @@ export default function ChatClient({
           originalMessage: trimmed,
           documentsList: documentsList ?? undefined,
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -334,6 +337,10 @@ export default function ChatClient({
           | { error?: string }
           | null;
         throw new Error(payload?.error ?? "Chat failed.");
+      }
+
+      if (response.redirected && response.url.includes("/login")) {
+        throw new Error("Session expired. Please sign in again.");
       }
 
       const data = (await response.json()) as ChatResponse;
@@ -345,7 +352,12 @@ export default function ChatClient({
       };
       setMessages((prev) => [...prev, assistant]);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Chat failed.";
+      const errorMessage =
+        err instanceof Error && err.name === "AbortError"
+          ? "Request timed out. Please try again."
+          : err instanceof Error
+            ? err.message
+            : "Chat failed.";
       setError(errorMessage);
       setMessages((prev) => [
         ...prev,
@@ -357,6 +369,7 @@ export default function ChatClient({
         },
       ]);
     } finally {
+      window.clearTimeout(timeoutId);
       setIsSending(false);
     }
   }

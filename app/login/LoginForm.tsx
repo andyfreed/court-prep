@@ -21,20 +21,27 @@ export default function LoginForm() {
     setError(null);
     setIsSubmitting(true);
 
-    const result = await signIn("credentials", {
-      redirect: false,
-      username,
-      password,
-      callbackUrl,
-    });
+    try {
+      const result = await signIn("credentials", {
+        redirect: false,
+        username,
+        password,
+        callbackUrl,
+      });
 
-    if (!result || result.error) {
-      setError("Invalid username or password.");
+      if (!result || result.error) {
+        setError("Invalid username or password.");
+        return;
+      }
+
+      const target = result.url ?? callbackUrl;
+      router.replace(target);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign in failed.");
+    } finally {
       setIsSubmitting(false);
-      return;
     }
-
-    router.replace(result.url ?? callbackUrl);
   }
 
   return (
