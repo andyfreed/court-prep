@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 type UploadPayload = {
   caseId?: string;
   title?: string;
+  description?: string;
   originalName?: string;
   size?: number;
   mimeType?: string;
@@ -41,26 +42,27 @@ export async function POST(req: NextRequest) {
           tokenPayload: JSON.stringify(payload),
           addRandomSuffix: true,
           allowOverwrite: false,
-          maximumSizeInBytes: 200 * 1024 * 1024,
+          maximumSizeInBytes: 2550 * 1024 * 1024,
         };
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
         const payload = parsePayload(tokenPayload ?? null);
         try {
           const caseRecord = await getOrCreateCase(payload.caseId);
-          const fileName = getFileName(blob.pathname, "upload.bin");
+          const fallbackName = payload.originalName ?? "upload.bin";
+          const fileName = getFileName(blob.pathname, fallbackName);
           await prisma.documentIngestJob.create({
             data: {
               caseId: caseRecord.id,
-              filename: payload.title ?? payload.originalName ?? fileName,
-              blobUrl: blob.url,
+              filename: payload.title ?? fileName,
               mimeType: payload.mimeType ?? blob.contentType ?? null,
               sizeBytes: payload.size ?? null,
+              blobUrl: blob.url,
               status: "uploaded",
             },
           });
         } catch (error) {
-          console.error("Upload completion failed:", error);
+          console.error("Upload batch completion failed:", error);
         }
       },
     });
@@ -68,7 +70,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
-      { error: "Upload failed.", detail: String(error) },
+      { error: "Batch upload failed.", detail: String(error) },
       { status: 500 },
     );
   }
