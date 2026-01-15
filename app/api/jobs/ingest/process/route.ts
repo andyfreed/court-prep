@@ -13,6 +13,7 @@ import { ensureVectorStore, getOrCreateCase } from "@/lib/cases";
 import { createResponses, getOpenAI } from "@/lib/openai";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const MAX_CONCURRENCY = 12;
 const MAX_JOBS = 50;
