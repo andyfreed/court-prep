@@ -289,7 +289,7 @@ async function runResponse(params: {
           tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
           include,
           max_output_tokens: 1200,
-        } as any,
+        } as unknown as Parameters<typeof createResponses>[0],
         { signal },
       ),
     params.timeoutMs,

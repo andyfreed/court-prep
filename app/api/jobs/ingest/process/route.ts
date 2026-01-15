@@ -124,9 +124,11 @@ async function extractTextFromBuffer(params: {
 
   if (ext === "msg") {
     const mod = await import("msgreader");
-    const MsgReader = (mod as { default?: any }).default ?? mod;
-    const reader = new MsgReader(params.buffer);
-    const data = reader.getFileData();
+    const MsgReader = (mod as { default?: unknown }).default ?? mod;
+    const reader = new (MsgReader as {
+      new (data: Buffer): { getFileData: () => Record<string, unknown> | null };
+    })(params.buffer);
+    const data = reader.getFileData() ?? {};
     const bodyHtml = data?.bodyHTML ? htmlToText(data.bodyHTML, { wordwrap: false }) : "";
     const body = data?.body ?? bodyHtml ?? "";
     const headers = [
@@ -157,7 +159,7 @@ async function extractTextFromBuffer(params: {
               },
             ],
             max_output_tokens: 1200,
-          } as any,
+          } as unknown as Parameters<typeof createResponses>[0],
           { signal },
         ),
       45000,
