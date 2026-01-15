@@ -9,19 +9,11 @@ import {
 } from "@/lib/schemas";
 import {
   MAIN_CHAT_SYSTEM_PROMPT,
-  SEARCH_PLAN_PROMPT,
 } from "@/lib/prompts";
 
 export const runtime = "nodejs";
-
-type SearchPlan = {
-  search_queries: string[];
-  needed_sources: Array<"document" | "transcript_message" | "email">;
-  time_window_hint: { start: string | null; end: string | null };
-  key_entities: string[];
-  should_update_timeline: boolean;
-  should_create_lawyer_note: boolean;
-};
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 type RetrievedSource = {
   document_version_id: string;
@@ -46,6 +38,55 @@ type FileSearchResult = {
   section?: string | null;
   content?: FileSearchContent | null;
 };
+
+type StepMarks = {
+  t0: number;
+  threadReady?: number;
+  vectorStoreReady?: number;
+  fileListReady?: number;
+  retrievalReady?: number;
+  synthesisReady?: number;
+  validated?: number;
+  retryDone?: number;
+};
+
+function logStep(params: {
+  step: string;
+  caseId: string | null;
+  threadId: string | null;
+  hasIndexedFiles?: boolean;
+  retrievedCount?: number;
+  marks: StepMarks;
+}) {
+  const ms: Record<string, number> = {};
+  const t0 = params.marks.t0;
+  for (const [key, value] of Object.entries(params.marks)) {
+    if (key == "t0" || value == null) continue;
+    ms[key] = value - t0;
+  }
+  console.log(
+    JSON.stringify({
+      step: params.step,
+      caseId: params.caseId,
+      threadId: params.threadId,
+      hasIndexedFiles: params.hasIndexedFiles,
+      retrievedCount: params.retrievedCount,
+      ms,
+    }),
+  );
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
 function extractJson(text: string) {
   const first = text.indexOf("{");
@@ -223,14 +264,20 @@ async function runResponse(params: {
       ]
     : undefined;
 
-  const response = await getOpenAI().responses.create({
-    model: "gpt-5.2-pro",
-    instructions: params.instructions,
-    input: params.input,
-    tools,
-    tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
-    include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
-  });
+  const response = await withTimeout(
+    getOpenAI().responses.create({
+      model: "gpt-5.2-pro",
+      instructions: params.instructions,
+      input: params.input,
+      tools,
+      tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
+      include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
+      max_output_tokens: 1200,
+      temperature: 0.2,
+    }),
+    45000,
+    "OpenAI responses.create",
+  );
 
   return {
     text: response.output_text ?? "",
@@ -258,29 +305,11 @@ function parseChatResponse(text: string) {
   }
 }
 
-async function buildSearchPlan(message: string) {
-  const planResponse = await runResponse({
-    instructions: SEARCH_PLAN_PROMPT,
-    input: message,
-  });
-  try {
-    return JSON.parse(extractJson(planResponse.text)) as SearchPlan;
-  } catch {
-    return {
-      search_queries: [message],
-      needed_sources: ["document"],
-      time_window_hint: { start: null, end: null },
-      key_entities: [],
-      should_update_timeline: false,
-      should_create_lawyer_note: false,
-    } satisfies SearchPlan;
-  }
-}
-
 export async function POST(req: NextRequest) {
   let caseRecord: { id: string; name: string } | null = null;
   let threadRecord: { id: string } | null = null;
   let storedUserMessage: string | null = null;
+  const marks: StepMarks = { t0: Date.now() };
   try {
     const body = await req.json();
     const message = body?.message as string | undefined;
@@ -302,8 +331,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing message." }, { status: 400 });
     }
 
+    logStep({
+      step: "start",
+      caseId: caseId ?? null,
+      threadId: threadId ?? null,
+      marks,
+    });
+
     const threadData = await getOrCreateDefaultThread(caseId);
     caseRecord = threadData.caseRecord;
+    marks.threadReady = Date.now();
 
     threadRecord = threadId
       ? await prisma.chatThread.findFirst({
@@ -314,6 +351,13 @@ export async function POST(req: NextRequest) {
     if (!threadRecord) {
       return NextResponse.json({ error: "Invalid thread." }, { status: 404 });
     }
+
+    logStep({
+      step: "thread_ready",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      marks,
+    });
 
     storedUserMessage = originalMessage ?? message;
     await prisma.chatMessage.create({
@@ -360,8 +404,28 @@ export async function POST(req: NextRequest) {
     }
 
     const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
-    const files = await getOpenAI().vectorStores.files.list(vectorStoreId);
+    marks.vectorStoreReady = Date.now();
+    logStep({
+      step: "vector_store_ready",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      marks,
+    });
+    const files = await withTimeout(
+      getOpenAI().vectorStores.files.list(vectorStoreId),
+      45000,
+      "OpenAI vectorStores.files.list",
+    );
+    marks.fileListReady = Date.now();
     const hasIndexedFiles = (files?.data?.length ?? 0) > 0;
+
+    logStep({
+      step: "files_listed",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      hasIndexedFiles,
+      marks,
+    });
 
     if (!hasIndexedFiles) {
       const emptyResponse: ChatResponse = {
@@ -399,10 +463,10 @@ export async function POST(req: NextRequest) {
         },
       };
 
-        await prisma.chatMessage.create({
-          data: {
-            caseId: caseRecord.id,
-            threadId: threadRecord.id,
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
           role: "assistant",
           content: emptyResponse,
         },
@@ -410,15 +474,22 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json(emptyResponse);
     }
-    const plan = await buildSearchPlan(message);
-
     const documentsContext = documentsList?.length
       ? `Documents on file (from DB): ${JSON.stringify(documentsList)}`
       : "Documents on file (from DB): none provided";
 
-    const retrievalResults = await runRetrieval({
+    const retrievalResults = (await runRetrieval({
       message,
       vectorStoreId,
+    })).slice(0, 8);
+    marks.retrievalReady = Date.now();
+    logStep({
+      step: "retrieval_done",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      hasIndexedFiles,
+      retrievedCount: retrievalResults.length,
+      marks,
     });
 
     const retrievedSources: RetrievedSource[] = [];
@@ -456,7 +527,6 @@ export async function POST(req: NextRequest) {
 
     const baseInput = [
       `Case ID: ${caseRecord.id}`,
-      `SearchPlan: ${JSON.stringify(plan)}`,
       documentsContext,
       `RetrievedSources: ${JSON.stringify(retrievedSources)}`,
       `User question: ${message}`,
@@ -477,8 +547,26 @@ export async function POST(req: NextRequest) {
       vectorStoreId,
       requireFileSearch: true,
     });
+    marks.synthesisReady = Date.now();
+    logStep({
+      step: "synthesis_done",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      hasIndexedFiles,
+      retrievedCount: retrievedSources.length,
+      marks,
+    });
 
     let parsed = parseChatResponse(initialResponse.text);
+    marks.validated = Date.now();
+    logStep({
+      step: "zod_validated",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      hasIndexedFiles,
+      retrievedCount: retrievedSources.length,
+      marks,
+    });
 
     if (
       !parsed.success ||
@@ -504,9 +592,27 @@ export async function POST(req: NextRequest) {
         vectorStoreId,
         requireFileSearch: true,
       });
+      marks.retryDone = Date.now();
 
       parsed = parseChatResponse(retryResponse.text);
+      logStep({
+        step: "retry_done",
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+        hasIndexedFiles,
+        retrievedCount: retrievedSources.length,
+        marks,
+      });
     }
+
+    logStep({
+      step: "response_validated",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      hasIndexedFiles,
+      retrievedCount: retrievedSources.length,
+      marks,
+    });
 
     if (!parsed.success) {
       console.error("Chat response invalid:", initialResponse.text);
@@ -562,16 +668,19 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(parsed.data);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const isTimeout = /timed out/i.test(message);
     const failureResponse: ChatResponse = {
       answer: {
-        summary: "Chat request failed.",
-        direct_answer:
-          "The assistant hit an error while responding. Try again in a moment.",
+        summary: isTimeout ? "Chat request timed out." : "Chat request failed.",
+        direct_answer: isTimeout
+          ? "The assistant took too long to respond. Try again, or ask a more specific question."
+          : "The assistant hit an error while responding. Try again in a moment.",
         confidence: "low",
         uncertainties: [
           {
             topic: "Request failure",
-            why: String(error),
+            why: message,
             needed_sources: ["document"],
           },
         ],

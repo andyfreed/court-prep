@@ -339,6 +339,13 @@ export default function ChatClient({
         throw new Error(payload?.error ?? "Chat failed.");
       }
 
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        throw new Error(
+          `Session/auth issue. Status ${response.status}. Please reload and sign in again.`,
+        );
+      }
+
       if (response.redirected && response.url.includes("/login")) {
         throw new Error("Session expired. Please sign in again.");
       }
