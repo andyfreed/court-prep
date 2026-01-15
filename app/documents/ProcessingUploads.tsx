@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -40,16 +40,16 @@ export default function ProcessingUploads({ caseId }: ProcessingUploadsProps) {
     [jobs],
   );
 
-  async function loadJobs() {
+  const loadJobs = useCallback(async () => {
     const response = await fetch(`/api/jobs/ingest/status?caseId=${caseId}`);
     if (!response.ok) return;
     const payload = (await response.json()) as { jobs: IngestJob[] };
     setJobs(payload.jobs ?? []);
-  }
+  }, [caseId]);
 
   useEffect(() => {
     void loadJobs();
-  }, [caseId]);
+  }, [loadJobs]);
 
   useEffect(() => {
     if (pending.length === 0) return;
@@ -57,7 +57,7 @@ export default function ProcessingUploads({ caseId }: ProcessingUploadsProps) {
       void loadJobs();
     }, 5000);
     return () => clearInterval(interval);
-  }, [pending.length]);
+  }, [pending.length, loadJobs]);
 
   async function handleProcessNow() {
     setIsProcessing(true);
