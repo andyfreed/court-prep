@@ -29,13 +29,15 @@ type ChatClientProps = {
 };
 
 function getSourceLabel(source: SourceRef) {
-  return source.locator?.label || source.ref_type;
+  return source.locator.label || source.ref_type;
 }
 
 function getSourceHref(source: SourceRef) {
   if (source.ref_type === "document" && source.document_version_id) {
-    const page = source.locator?.page_start ?? null;
-    return page ? `/documents/${source.document_version_id}?page=${page}` : `/documents/${source.document_version_id}`;
+    const page = source.locator.page_start ?? null;
+    return page
+      ? `/documents/${source.document_version_id}?page=${page}`
+      : `/documents/${source.document_version_id}`;
   }
   if (source.ref_type === "transcript_message") {
     const ids = source.transcript_message_ids?.join(",") ?? "";
@@ -47,8 +49,8 @@ function getSourceHref(source: SourceRef) {
 function SourceChip({ source }: { source: SourceRef }) {
   const href = getSourceHref(source);
   const label = getSourceLabel(source);
-  const detail = source.locator?.page_start ? `p.${source.locator.page_start}` : null;
-  const text = detail ? `${label} • ${detail}` : label;
+  const detail = source.locator.page_start ? `p.${source.locator.page_start}` : null;
+  const text = detail ? `${label} - ${detail}` : label;
 
   if (href) {
     return (
@@ -94,7 +96,9 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </span>
         </div>
         <p className="font-medium text-foreground">{response.answer.summary}</p>
-        <p className="text-muted-foreground">{response.answer.direct_answer}</p>
+        <p className="whitespace-pre-line text-muted-foreground">
+          {response.answer.direct_answer}
+        </p>
       </div>
 
       {response.evidence.length ? (
@@ -105,7 +109,7 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="space-y-3">
             {response.evidence.map((item, index) => (
               <div key={`${item.claim}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">• {item.claim}</p>
+                <p className="text-sm text-foreground">- {item.claim}</p>
                 <SourceList sources={item.source_refs} />
               </div>
             ))}
@@ -121,7 +125,7 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="space-y-3">
             {response.what_helps.map((item, index) => (
               <div key={`${item.point}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">• {item.point}</p>
+                <p className="text-sm text-foreground">- {item.point}</p>
                 <SourceList sources={item.source_refs} />
               </div>
             ))}
@@ -137,7 +141,7 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="space-y-3">
             {response.what_hurts.map((item, index) => (
               <div key={`${item.point}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">• {item.point}</p>
+                <p className="text-sm text-foreground">- {item.point}</p>
                 <SourceList sources={item.source_refs} />
               </div>
             ))}
@@ -153,9 +157,9 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="space-y-3">
             {response.next_steps.map((item, index) => (
               <div key={`${item.action}-${index}`} className="space-y-1 text-sm">
-                <div className="font-medium text-foreground">• {item.action}</div>
+                <div className="font-medium text-foreground">- {item.action}</div>
                 <div className="text-xs text-muted-foreground">
-                  Owner: {item.owner} · Priority: {item.priority}
+                  Owner: {item.owner} | Priority: {item.priority}
                 </div>
               </div>
             ))}
@@ -171,7 +175,7 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="space-y-3">
             {response.questions_for_lawyer.map((item, index) => (
               <div key={`${item.question}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">• {item.question}</p>
+                <p className="text-sm text-foreground">- {item.question}</p>
                 <p className="text-xs text-muted-foreground">{item.why_it_matters}</p>
                 <SourceList sources={item.source_refs} />
               </div>
@@ -188,7 +192,7 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="space-y-3">
             {response.missing_or_requested_docs.map((item, index) => (
               <div key={`${item.doc_name}-${index}`} className="space-y-1 text-sm">
-                <div className="font-medium text-foreground">• {item.doc_name}</div>
+                <div className="font-medium text-foreground">- {item.doc_name}</div>
                 <div className="text-xs text-muted-foreground">{item.why}</div>
               </div>
             ))}
@@ -210,39 +214,6 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </pre>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function DocumentsListMessage({ documents }: { documents: DocumentListEntry[] }) {
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Documents On File
-      </h3>
-      {documents.length === 0 ? (
-        <div className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
-          No documents uploaded yet.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {documents.map((doc) => (
-            <div key={doc.document_version_id} className="rounded-lg border bg-card p-4">
-              <div className="text-sm font-medium text-foreground">{doc.title}</div>
-              <div className="text-xs text-muted-foreground">
-                {doc.fileName} · {doc.docType ?? "Unknown type"} ·{" "}
-                {new Date(doc.uploadedAt).toLocaleString()}
-              </div>
-              <a
-                className="mt-2 inline-flex text-xs font-medium text-primary hover:underline"
-                href={`/documents/${doc.document_version_id}`}
-              >
-                Open
-              </a>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -271,6 +242,8 @@ export default function ChatClient({
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const threadList = useMemo(
@@ -279,8 +252,38 @@ export default function ChatClient({
   );
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    function handleScroll() {
+      const threshold = 160;
+      const scrollPosition = window.innerHeight + window.scrollY;
+      const pageHeight = document.documentElement.scrollHeight;
+      setIsNearBottom(pageHeight - scrollPosition < threshold);
+    }
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (isNearBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, isNearBottom]);
+
+  async function handleCopy(message: ChatMessage) {
+    const text =
+      message.role === "user"
+        ? String((message.content as { text?: string })?.text ?? "")
+        : JSON.stringify(message.content, null, 2);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(message.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      setCopiedId(null);
+    }
+  }
 
   async function handleSend(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -312,15 +315,6 @@ export default function ChatClient({
           documents: DocumentListEntry[];
         };
         documentsList = listPayload.documents ?? [];
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `docs-${Date.now()}`,
-            role: "assistant",
-            content: { type: "documents_list", documents: documentsList },
-            createdAt: new Date().toISOString(),
-          },
-        ]);
       }
 
       const response = await fetch("/api/chat", {
@@ -329,9 +323,7 @@ export default function ChatClient({
         body: JSON.stringify({
           caseId,
           threadId,
-          message: documentsList
-            ? "Based on the documents on file, what is missing or should I upload next?"
-            : trimmed,
+          message: trimmed,
           originalMessage: trimmed,
           documentsList: documentsList ?? undefined,
         }),
@@ -406,8 +398,18 @@ export default function ChatClient({
                 key={message.id}
                 className={message.role === "user" ? "space-y-2" : "space-y-4"}
               >
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {message.role === "user" ? "You" : "Assistant"}
+                <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <span>
+                    {message.role === "user" ? "You" : "Assistant"} -{" "}
+                    {new Date(message.createdAt).toLocaleString()}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => handleCopy(message)}
+                  >
+                    {copiedId === message.id ? "Copied" : "Copy"}
+                  </button>
                 </div>
                 {message.role === "user" ? (
                   <div className="rounded-2xl border bg-card px-4 py-3 text-sm text-foreground">
@@ -415,15 +417,7 @@ export default function ChatClient({
                   </div>
                 ) : (
                   <>
-                    {(message.content as { type?: string })?.type ===
-                    "documents_list" ? (
-                      <DocumentsListMessage
-                        documents={
-                          (message.content as { documents?: DocumentListEntry[] })
-                            ?.documents ?? []
-                        }
-                      />
-                    ) : (message.content as { type?: string })?.type === "error" ? (
+                    {(message.content as { type?: string })?.type === "error" ? (
                       <ErrorMessage
                         message={(message.content as { message?: string })?.message ?? ""}
                       />
@@ -437,6 +431,17 @@ export default function ChatClient({
           )}
         </div>
 
+        {!isNearBottom ? (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="rounded-full border bg-background px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+            >
+              Jump to bottom
+            </button>
+          </div>
+        ) : null}
         <form className="space-y-3" onSubmit={handleSend}>
           <textarea
             className="min-h-[120px] w-full rounded-lg border bg-background px-3 py-2 text-sm"

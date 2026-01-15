@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -32,24 +33,24 @@ export default function RootLayout({
             <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
               <div className="text-lg font-semibold">Court Prep</div>
               <nav className="flex gap-4 text-sm text-muted-foreground">
-                <a href="/chat" className="hover:text-foreground">
+                <Link href="/chat" className="hover:text-foreground">
                   Chat
-                </a>
-                <a href="/documents" className="hover:text-foreground">
+                </Link>
+                <Link href="/documents" className="hover:text-foreground">
                   Documents
-                </a>
-                <a href="/timeline" className="hover:text-foreground">
+                </Link>
+                <Link href="/timeline" className="hover:text-foreground">
                   Timeline
-                </a>
-                <a href="/lawyer-notes" className="hover:text-foreground">
+                </Link>
+                <Link href="/lawyer-notes" className="hover:text-foreground">
                   Lawyer Notes
-                </a>
-                <a href="/insights" className="hover:text-foreground">
+                </Link>
+                <Link href="/insights" className="hover:text-foreground">
                   Insights
-                </a>
-                <a href="/settings" className="hover:text-foreground">
+                </Link>
+                <Link href="/settings" className="hover:text-foreground">
                   Settings
-                </a>
+                </Link>
               </nav>
             </div>
           </header>
