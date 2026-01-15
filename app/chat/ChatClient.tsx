@@ -293,7 +293,7 @@ export default function ChatClient({
     setError(null);
     setIsSending(true);
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 60000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 180000);
 
     const optimisticUser: ChatMessage = {
       id: `local-${Date.now()}`,

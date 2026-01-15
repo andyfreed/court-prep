@@ -50,18 +50,19 @@ type StepMarks = {
   retryDone?: number;
 };
 
-function logStep(params: {
+function logTimings(params: {
   step: string;
   caseId: string | null;
   threadId: string | null;
   hasIndexedFiles?: boolean;
   retrievedCount?: number;
   marks: StepMarks;
+  error?: string | null;
 }) {
   const ms: Record<string, number> = {};
   const t0 = params.marks.t0;
   for (const [key, value] of Object.entries(params.marks)) {
-    if (key == "t0" || value == null) continue;
+    if (key === "t0" || value == null) continue;
     ms[key] = value - t0;
   }
   console.log(
@@ -72,19 +73,27 @@ function logStep(params: {
       hasIndexedFiles: params.hasIndexedFiles,
       retrievedCount: params.retrievedCount,
       ms,
+      error: params.error ?? undefined,
     }),
   );
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  const timeoutPromise = new Promise<T>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
-  });
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string,
+) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    return await fn(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`${label} timed out`);
+    }
+    throw error;
   } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+    clearTimeout(timeoutId);
   }
 }
 
@@ -254,6 +263,8 @@ async function runResponse(params: {
   input: string;
   vectorStoreId?: string;
   requireFileSearch?: boolean;
+  timeoutMs: number;
+  label: string;
 }) {
   const tools = params.vectorStoreId
     ? [
@@ -265,18 +276,22 @@ async function runResponse(params: {
     : undefined;
 
   const response = await withTimeout(
-    getOpenAI().responses.create({
-      model: "gpt-5.2-pro",
-      instructions: params.instructions,
-      input: params.input,
-      tools,
-      tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
-      include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
-      max_output_tokens: 1200,
-      temperature: 0.2,
-    }),
-    45000,
-    "OpenAI responses.create",
+    (signal) =>
+      getOpenAI().responses.create(
+        {
+          model: "gpt-5.2-pro",
+          instructions: params.instructions,
+          input: params.input,
+          tools,
+          tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
+          include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
+          max_output_tokens: 1200,
+          temperature: 0.2,
+        },
+        { signal },
+      ),
+    params.timeoutMs,
+    params.label,
   );
 
   return {
@@ -292,6 +307,8 @@ async function runRetrieval(params: { message: string; vectorStoreId: string }) 
     input: params.message,
     vectorStoreId: params.vectorStoreId,
     requireFileSearch: true,
+    timeoutMs: 30000,
+    label: "file_search",
   });
   return retrieval.results;
 }
@@ -309,6 +326,8 @@ export async function POST(req: NextRequest) {
   let caseRecord: { id: string; name: string } | null = null;
   let threadRecord: { id: string } | null = null;
   let storedUserMessage: string | null = null;
+  let hasIndexedFiles: boolean | undefined;
+  let retrievedCount: number | undefined;
   const marks: StepMarks = { t0: Date.now() };
   try {
     const body = await req.json();
@@ -331,13 +350,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing message." }, { status: 400 });
     }
 
-    logStep({
-      step: "start",
-      caseId: caseId ?? null,
-      threadId: threadId ?? null,
-      marks,
-    });
-
     const threadData = await getOrCreateDefaultThread(caseId);
     caseRecord = threadData.caseRecord;
     marks.threadReady = Date.now();
@@ -351,13 +363,6 @@ export async function POST(req: NextRequest) {
     if (!threadRecord) {
       return NextResponse.json({ error: "Invalid thread." }, { status: 404 });
     }
-
-    logStep({
-      step: "thread_ready",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      marks,
-    });
 
     storedUserMessage = originalMessage ?? message;
     await prisma.chatMessage.create({
@@ -405,27 +410,13 @@ export async function POST(req: NextRequest) {
 
     const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
     marks.vectorStoreReady = Date.now();
-    logStep({
-      step: "vector_store_ready",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      marks,
-    });
     const files = await withTimeout(
-      getOpenAI().vectorStores.files.list(vectorStoreId),
-      45000,
-      "OpenAI vectorStores.files.list",
+      (signal) => getOpenAI().vectorStores.files.list(vectorStoreId, { signal }),
+      20000,
+      "vectorStores.files.list",
     );
     marks.fileListReady = Date.now();
-    const hasIndexedFiles = (files?.data?.length ?? 0) > 0;
-
-    logStep({
-      step: "files_listed",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      hasIndexedFiles,
-      marks,
-    });
+    hasIndexedFiles = (files?.data?.length ?? 0) > 0;
 
     if (!hasIndexedFiles) {
       const emptyResponse: ChatResponse = {
@@ -481,16 +472,9 @@ export async function POST(req: NextRequest) {
     const retrievalResults = (await runRetrieval({
       message,
       vectorStoreId,
-    })).slice(0, 8);
+    })).slice(0, 6);
     marks.retrievalReady = Date.now();
-    logStep({
-      step: "retrieval_done",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      hasIndexedFiles,
-      retrievedCount: retrievalResults.length,
-      marks,
-    });
+    retrievedCount = retrievalResults.length;
 
     const retrievedSources: RetrievedSource[] = [];
     if (retrievalResults.length > 0) {
@@ -546,27 +530,13 @@ export async function POST(req: NextRequest) {
       input: baseInput,
       vectorStoreId,
       requireFileSearch: true,
+      timeoutMs: 45000,
+      label: "synthesis",
     });
     marks.synthesisReady = Date.now();
-    logStep({
-      step: "synthesis_done",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      hasIndexedFiles,
-      retrievedCount: retrievedSources.length,
-      marks,
-    });
 
     let parsed = parseChatResponse(initialResponse.text);
     marks.validated = Date.now();
-    logStep({
-      step: "zod_validated",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      hasIndexedFiles,
-      retrievedCount: retrievedSources.length,
-      marks,
-    });
 
     if (
       !parsed.success ||
@@ -591,28 +561,13 @@ export async function POST(req: NextRequest) {
         input: baseInput,
         vectorStoreId,
         requireFileSearch: true,
+        timeoutMs: 45000,
+        label: "synthesis_retry",
       });
       marks.retryDone = Date.now();
 
       parsed = parseChatResponse(retryResponse.text);
-      logStep({
-        step: "retry_done",
-        caseId: caseRecord.id,
-        threadId: threadRecord.id,
-        hasIndexedFiles,
-        retrievedCount: retrievedSources.length,
-        marks,
-      });
     }
-
-    logStep({
-      step: "response_validated",
-      caseId: caseRecord.id,
-      threadId: threadRecord.id,
-      hasIndexedFiles,
-      retrievedCount: retrievedSources.length,
-      marks,
-    });
 
     if (!parsed.success) {
       console.error("Chat response invalid:", initialResponse.text);
@@ -666,15 +621,33 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    logTimings({
+      step: "completed",
+      caseId: caseRecord.id,
+      threadId: threadRecord.id,
+      hasIndexedFiles,
+      retrievedCount,
+      marks,
+    });
+
     return NextResponse.json(parsed.data);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const isTimeout = /timed out/i.test(message);
+    logTimings({
+      step: "failed",
+      caseId: caseRecord?.id ?? null,
+      threadId: threadRecord?.id ?? null,
+      hasIndexedFiles,
+      retrievedCount,
+      marks,
+      error: message,
+    });
     const failureResponse: ChatResponse = {
       answer: {
         summary: isTimeout ? "Chat request timed out." : "Chat request failed.",
         direct_answer: isTimeout
-          ? "The assistant took too long to respond. Try again, or ask a more specific question."
+          ? `The assistant timed out during ${message.replace(' timed out', '')}. Try again, or ask a more specific question.`
           : "The assistant hit an error while responding. Try again in a moment.",
         confidence: "low",
         uncertainties: [
