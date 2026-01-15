@@ -121,3 +121,25 @@ model LawyerNote {
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 }
+
+model ChatThread {
+  id        String   @id @default(cuid())
+  caseId    String
+  title     String
+  createdAt DateTime @default(now())
+
+  case     Case         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  caseId    String
+  threadId  String
+  role      String
+  content   Json
+  createdAt DateTime @default(now())
+
+  case   Case       @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+}

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { ensureVectorStore } from "@/lib/cases";
+import { ensureVectorStore, getOrCreateDefaultThread } from "@/lib/cases";
 import { getOpenAI } from "@/lib/openai";
+import { prisma } from "@/lib/db";
 import {
   ChatResponseSchema,
   type ChatResponse,
@@ -94,12 +95,84 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const message = body?.message as string | undefined;
     const caseId = body?.caseId as string | undefined;
+    const threadId = body?.threadId as string | undefined;
 
     if (!message) {
       return NextResponse.json({ error: "Missing message." }, { status: 400 });
     }
 
-    const { caseRecord, vectorStoreId } = await ensureVectorStore(caseId);
+    const { caseRecord, thread } = await getOrCreateDefaultThread(caseId);
+    const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
+
+    const threadRecord = threadId
+      ? await prisma.chatThread.findFirst({
+          where: { id: threadId, caseId: caseRecord.id },
+        })
+      : thread;
+
+    if (!threadRecord) {
+      return NextResponse.json({ error: "Invalid thread." }, { status: 404 });
+    }
+
+    const files = await getOpenAI().vectorStores.files.list(vectorStoreId);
+    const hasIndexedFiles = (files?.data?.length ?? 0) > 0;
+
+    await prisma.chatMessage.create({
+      data: {
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+        role: "user",
+        content: { text: message },
+      },
+    });
+
+    if (!hasIndexedFiles) {
+      const emptyResponse: ChatResponse = {
+        answer: {
+          summary: "No indexed documents yet.",
+          direct_answer:
+            "I do not have any indexed documents for this case yet. Upload at least one document so I can cite it in answers.",
+          confidence: "low",
+          uncertainties: [
+            {
+              topic: "Document coverage",
+              why: "The case has no files indexed in the vector store yet.",
+              needed_sources: ["document"],
+            },
+          ],
+        },
+        evidence: [],
+        what_helps: [],
+        what_hurts: [],
+        next_steps: [
+          { action: "Upload a case document.", owner: "user", priority: "high" },
+        ],
+        questions_for_lawyer: [],
+        missing_or_requested_docs: [
+          {
+            doc_name: "Primary custody agreement or order",
+            why: "Needed to answer custody-specific questions with citations.",
+            priority: "high",
+          },
+        ],
+        meta: {
+          used_retrieval: false,
+          retrieval_notes: "No vector store files found for this case.",
+          safety_note: "Neutral, document-grounded guidance only.",
+        },
+      };
+
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          role: "assistant",
+          content: emptyResponse,
+        },
+      });
+
+      return NextResponse.json(emptyResponse);
+    }
     const plan = await buildSearchPlan(message);
 
     const baseInput = [
@@ -144,6 +217,15 @@ export async function POST(req: NextRequest) {
         { status: 422 },
       );
     }
+
+    await prisma.chatMessage.create({
+      data: {
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+        role: "assistant",
+        content: parsed.data,
+      },
+    });
 
     return NextResponse.json(parsed.data);
   } catch (error) {

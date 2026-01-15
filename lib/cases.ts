@@ -34,3 +34,22 @@ export async function ensureVectorStore(caseId?: string) {
 
   return { caseRecord: updated, vectorStoreId: vectorStore.id };
 }
+
+export async function getOrCreateDefaultThread(caseId?: string) {
+  const caseRecord = await getOrCreateCase(caseId);
+  const existing = await prisma.chatThread.findFirst({
+    where: { caseId: caseRecord.id },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (existing) return { caseRecord, thread: existing };
+
+  const thread = await prisma.chatThread.create({
+    data: {
+      caseId: caseRecord.id,
+      title: "Default thread",
+    },
+  });
+
+  return { caseRecord, thread };
+}
