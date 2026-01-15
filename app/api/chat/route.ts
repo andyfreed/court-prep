@@ -81,7 +81,7 @@ function isContestedTopic(message: string) {
 }
 
 function isDocumentListQuery(message: string) {
-  return /what documents are on file|documents on file|list documents|what docs do we have/i.test(
+  return /what documents are (on file|uploaded)|documents on file|list documents|what docs do we have|what files are uploaded|list files|what files do we have/i.test(
     message,
   );
 }
@@ -304,7 +304,6 @@ export async function POST(req: NextRequest) {
 
     const threadData = await getOrCreateDefaultThread(caseId);
     caseRecord = threadData.caseRecord;
-    const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
 
     threadRecord = threadId
       ? await prisma.chatThread.findFirst({
@@ -315,9 +314,6 @@ export async function POST(req: NextRequest) {
     if (!threadRecord) {
       return NextResponse.json({ error: "Invalid thread." }, { status: 404 });
     }
-
-    const files = await getOpenAI().vectorStores.files.list(vectorStoreId);
-    const hasIndexedFiles = (files?.data?.length ?? 0) > 0;
 
     storedUserMessage = originalMessage ?? message;
     await prisma.chatMessage.create({
@@ -362,6 +358,10 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json(response);
     }
+
+    const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
+    const files = await getOpenAI().vectorStores.files.list(vectorStoreId);
+    const hasIndexedFiles = (files?.data?.length ?? 0) > 0;
 
     if (!hasIndexedFiles) {
       const emptyResponse: ChatResponse = {
