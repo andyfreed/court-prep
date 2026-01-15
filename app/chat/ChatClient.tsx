@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import type { ChatResponse, SourceRef } from "@/lib/schemas";
@@ -84,7 +84,7 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-lg border bg-card p-4">
+      <div className="space-y-2 text-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Answer
@@ -93,10 +93,8 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
             Confidence: {response.answer.confidence}
           </span>
         </div>
-        <div className="mt-3 space-y-2 text-sm">
-          <p className="font-medium text-foreground">{response.answer.summary}</p>
-          <p className="text-muted-foreground">{response.answer.direct_answer}</p>
-        </div>
+        <p className="font-medium text-foreground">{response.answer.summary}</p>
+        <p className="text-muted-foreground">{response.answer.direct_answer}</p>
       </div>
 
       {response.evidence.length ? (
@@ -106,11 +104,9 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </h3>
           <div className="space-y-3">
             {response.evidence.map((item, index) => (
-              <div key={`${item.claim}-${index}`} className="rounded-lg border bg-card p-4">
-                <p className="text-sm text-foreground">{item.claim}</p>
-                <div className="mt-3">
-                  <SourceList sources={item.source_refs} />
-                </div>
+              <div key={`${item.claim}-${index}`} className="space-y-2">
+                <p className="text-sm text-foreground">• {item.claim}</p>
+                <SourceList sources={item.source_refs} />
               </div>
             ))}
           </div>
@@ -124,11 +120,9 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </h3>
           <div className="space-y-3">
             {response.what_helps.map((item, index) => (
-              <div key={`${item.point}-${index}`} className="rounded-lg border bg-card p-4">
-                <p className="text-sm text-foreground">{item.point}</p>
-                <div className="mt-3">
-                  <SourceList sources={item.source_refs} />
-                </div>
+              <div key={`${item.point}-${index}`} className="space-y-2">
+                <p className="text-sm text-foreground">• {item.point}</p>
+                <SourceList sources={item.source_refs} />
               </div>
             ))}
           </div>
@@ -142,11 +136,9 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </h3>
           <div className="space-y-3">
             {response.what_hurts.map((item, index) => (
-              <div key={`${item.point}-${index}`} className="rounded-lg border bg-card p-4">
-                <p className="text-sm text-foreground">{item.point}</p>
-                <div className="mt-3">
-                  <SourceList sources={item.source_refs} />
-                </div>
+              <div key={`${item.point}-${index}`} className="space-y-2">
+                <p className="text-sm text-foreground">• {item.point}</p>
+                <SourceList sources={item.source_refs} />
               </div>
             ))}
           </div>
@@ -160,8 +152,8 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </h3>
           <div className="space-y-3">
             {response.next_steps.map((item, index) => (
-              <div key={`${item.action}-${index}`} className="rounded-lg border bg-card p-4 text-sm">
-                <div className="font-medium text-foreground">{item.action}</div>
+              <div key={`${item.action}-${index}`} className="space-y-1 text-sm">
+                <div className="font-medium text-foreground">• {item.action}</div>
                 <div className="text-xs text-muted-foreground">
                   Owner: {item.owner} · Priority: {item.priority}
                 </div>
@@ -178,12 +170,10 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </h3>
           <div className="space-y-3">
             {response.questions_for_lawyer.map((item, index) => (
-              <div key={`${item.question}-${index}`} className="rounded-lg border bg-card p-4">
-                <p className="text-sm text-foreground">{item.question}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{item.why_it_matters}</p>
-                <div className="mt-3">
-                  <SourceList sources={item.source_refs} />
-                </div>
+              <div key={`${item.question}-${index}`} className="space-y-2">
+                <p className="text-sm text-foreground">• {item.question}</p>
+                <p className="text-xs text-muted-foreground">{item.why_it_matters}</p>
+                <SourceList sources={item.source_refs} />
               </div>
             ))}
           </div>
@@ -197,8 +187,8 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </h3>
           <div className="space-y-3">
             {response.missing_or_requested_docs.map((item, index) => (
-              <div key={`${item.doc_name}-${index}`} className="rounded-lg border bg-card p-4 text-sm">
-                <div className="font-medium text-foreground">{item.doc_name}</div>
+              <div key={`${item.doc_name}-${index}`} className="space-y-1 text-sm">
+                <div className="font-medium text-foreground">• {item.doc_name}</div>
                 <div className="text-xs text-muted-foreground">{item.why}</div>
               </div>
             ))}
@@ -257,6 +247,14 @@ function DocumentsListMessage({ documents }: { documents: DocumentListEntry[] })
   );
 }
 
+function ErrorMessage({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+      {message}
+    </div>
+  );
+}
+
 function isDocumentListQuery(message: string) {
   return /what documents are on file|documents on file|list documents|what docs do we have/i.test(
     message,
@@ -273,11 +271,16 @@ export default function ChatClient({
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const threadList = useMemo(
     () => [{ id: threadId, title: threadTitle }],
     [threadId, threadTitle],
   );
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   async function handleSend(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -329,6 +332,7 @@ export default function ChatClient({
           message: documentsList
             ? "Based on the documents on file, what is missing or should I upload next?"
             : trimmed,
+          originalMessage: trimmed,
           documentsList: documentsList ?? undefined,
         }),
       });
@@ -349,7 +353,17 @@ export default function ChatClient({
       };
       setMessages((prev) => [...prev, assistant]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Chat failed.");
+      const errorMessage = err instanceof Error ? err.message : "Chat failed.";
+      setError(errorMessage);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `error-${Date.now()}`,
+          role: "assistant",
+          content: { type: "error", message: errorMessage },
+          createdAt: new Date().toISOString(),
+        },
+      ]);
     } finally {
       setIsSending(false);
     }
@@ -396,7 +410,7 @@ export default function ChatClient({
                   {message.role === "user" ? "You" : "Assistant"}
                 </div>
                 {message.role === "user" ? (
-                  <div className="rounded-lg border bg-card p-4 text-sm text-foreground">
+                  <div className="rounded-2xl border bg-card px-4 py-3 text-sm text-foreground">
                     {(message.content as { text?: string })?.text ?? ""}
                   </div>
                 ) : (
@@ -408,6 +422,10 @@ export default function ChatClient({
                           (message.content as { documents?: DocumentListEntry[] })
                             ?.documents ?? []
                         }
+                      />
+                    ) : (message.content as { type?: string })?.type === "error" ? (
+                      <ErrorMessage
+                        message={(message.content as { message?: string })?.message ?? ""}
                       />
                     ) : (
                       <AssistantMessage response={message.content as ChatResponse} />
@@ -431,6 +449,7 @@ export default function ChatClient({
             {isSending ? "Sending..." : "Send"}
           </Button>
         </form>
+        <div ref={bottomRef} />
       </section>
     </div>
   );

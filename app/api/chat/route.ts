@@ -169,11 +169,15 @@ async function buildSearchPlan(message: string) {
 }
 
 export async function POST(req: NextRequest) {
+  let caseRecord: { id: string; name: string } | null = null;
+  let threadRecord: { id: string } | null = null;
+  let storedUserMessage: string | null = null;
   try {
     const body = await req.json();
     const message = body?.message as string | undefined;
     const caseId = body?.caseId as string | undefined;
     const threadId = body?.threadId as string | undefined;
+    const originalMessage = body?.originalMessage as string | undefined;
     const documentsList = body?.documentsList as
       | Array<{
           document_version_id: string;
@@ -189,14 +193,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing message." }, { status: 400 });
     }
 
-    const { caseRecord, thread } = await getOrCreateDefaultThread(caseId);
+    const threadData = await getOrCreateDefaultThread(caseId);
+    caseRecord = threadData.caseRecord;
     const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
 
-    const threadRecord = threadId
+    threadRecord = threadId
       ? await prisma.chatThread.findFirst({
           where: { id: threadId, caseId: caseRecord.id },
         })
-      : thread;
+      : threadData.thread;
 
     if (!threadRecord) {
       return NextResponse.json({ error: "Invalid thread." }, { status: 404 });
@@ -205,12 +210,13 @@ export async function POST(req: NextRequest) {
     const files = await getOpenAI().vectorStores.files.list(vectorStoreId);
     const hasIndexedFiles = (files?.data?.length ?? 0) > 0;
 
+    storedUserMessage = originalMessage ?? message;
     await prisma.chatMessage.create({
       data: {
         caseId: caseRecord.id,
         threadId: threadRecord.id,
         role: "user",
-        content: { text: message },
+        content: { text: storedUserMessage },
       },
     });
 
@@ -250,10 +256,10 @@ export async function POST(req: NextRequest) {
         },
       };
 
-      await prisma.chatMessage.create({
-        data: {
-          caseId: caseRecord.id,
-          threadId: threadRecord.id,
+        await prisma.chatMessage.create({
+          data: {
+            caseId: caseRecord.id,
+            threadId: threadRecord.id,
           role: "assistant",
           content: emptyResponse,
         },
@@ -332,7 +338,7 @@ export async function POST(req: NextRequest) {
       validateCitationCoverage({
         parsed: parsed.success ? parsed.data : ({} as ChatResponse),
         hasFiles: hasIndexedFiles,
-        message,
+        message: originalMessage ?? message,
       })
     ) {
       const enforcement = [
@@ -408,9 +414,49 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(parsed.data);
   } catch (error) {
+    const failureResponse: ChatResponse = {
+      answer: {
+        summary: "Chat request failed.",
+        direct_answer:
+          "The assistant hit an error while responding. Try again in a moment.",
+        confidence: "low",
+        uncertainties: [
+          {
+            topic: "Request failure",
+            why: String(error),
+            needed_sources: ["document"],
+          },
+        ],
+      },
+      evidence: [],
+      what_helps: [],
+      what_hurts: [],
+      next_steps: [
+        { action: "Retry the question.", owner: "user", priority: "medium" },
+      ],
+      questions_for_lawyer: [],
+      missing_or_requested_docs: [],
+      meta: {
+        used_retrieval: false,
+        retrieval_notes: "Request failed before completing.",
+        safety_note: "Neutral, document-grounded guidance only.",
+      },
+    };
+
+    if (caseRecord && threadRecord && storedUserMessage) {
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          role: "assistant",
+          content: failureResponse,
+        },
+      });
+    }
+
     return NextResponse.json(
-      { error: "Chat failed.", detail: String(error) },
-      { status: 500 },
+      failureResponse,
+      { status: 200 },
     );
   }
 }
