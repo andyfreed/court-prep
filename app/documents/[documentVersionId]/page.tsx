@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import DocumentSearch from "./DocumentSearch";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,12 @@ export default async function DocumentDetailPage({
   const document = await prisma.document.findUnique({
     where: { id: params.documentVersionId },
   });
+  const ingestJob = document
+    ? await prisma.documentIngestJob.findFirst({
+        where: { documentId: document.id },
+        orderBy: { updatedAt: "desc" },
+      })
+    : null;
 
   if (!document) {
     return (
@@ -41,6 +48,8 @@ export default async function DocumentDetailPage({
           <div>Type: {document.mimeType ?? "Unknown"}</div>
           <div>Size: {document.size ?? "Unknown"} bytes</div>
           <div>Uploaded: {document.createdAt.toLocaleString()}</div>
+          <div>Status: {ingestJob?.status ?? "uploaded"}</div>
+          {ingestJob?.error ? <div>Error: {ingestJob.error}</div> : null}
         </div>
       </div>
       <a
@@ -51,6 +60,7 @@ export default async function DocumentDetailPage({
       >
         Open document
       </a>
+      <DocumentSearch extractedTextUrl={ingestJob?.extractedTextBlobUrl ?? null} />
     </section>
   );
 }

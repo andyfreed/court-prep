@@ -83,8 +83,30 @@ function SourceList({ sources }: { sources: SourceRef[] }) {
   );
 }
 
+function splitAnswerLines(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function isBulletLine(text: string) {
+  return /^[-•]\s+/.test(text) || /^\d+\.\s+/.test(text);
+}
+
+function stripBullet(text: string) {
+  return text.replace(/^[-•]\s+/, "").replace(/^\d+\.\s+/, "");
+}
+
+function getQuoteFromSource(source: SourceRef) {
+  return source.locator.quote || null;
+}
+
 function AssistantMessage({ response }: { response: ChatResponse }) {
   const [showRaw, setShowRaw] = useState(false);
+  const lines = splitAnswerLines(response.answer.direct_answer);
+  const hasBullets = lines.some((line) => isBulletLine(line));
+  const evidenceByIndex = response.evidence;
 
   return (
     <div className="space-y-6">
@@ -98,25 +120,54 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           </span>
         </div>
         <p className="font-medium text-foreground">{response.answer.summary}</p>
-        <p className="whitespace-pre-line text-muted-foreground">
-          {response.answer.direct_answer}
-        </p>
+        <div className="space-y-2 text-muted-foreground">
+          {lines.length === 0 ? (
+            <p>{response.answer.direct_answer}</p>
+          ) : (
+            lines.map((line, index) => {
+              const isBullet = isBulletLine(line);
+              const text = isBullet ? stripBullet(line) : line;
+              const evidence = evidenceByIndex[index];
+              return (
+                <div key={`${line}-${index}`} className="space-y-2">
+                  <div className="flex flex-wrap items-start gap-2">
+                    {isBullet ? <span className="text-foreground">•</span> : null}
+                    <p className="flex-1">{text}</p>
+                  </div>
+                  {evidence?.source_refs?.length ? (
+                    <SourceList sources={evidence.source_refs} />
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
 
       {response.evidence.length ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Evidence
-          </h3>
-          <div className="space-y-3">
-            {response.evidence.map((item, index) => (
-              <div key={`${item.claim}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">- {item.claim}</p>
-                <SourceList sources={item.source_refs} />
-              </div>
-            ))}
+        <details className="rounded-lg border bg-card p-4 text-sm">
+          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Show evidence
+          </summary>
+          <div className="mt-3 space-y-3">
+            {response.evidence.map((item, index) => {
+              const quote = item.source_refs
+                .map((source) => getQuoteFromSource(source))
+                .find(Boolean);
+              return (
+                <div key={`${item.claim}-${index}`} className="space-y-2">
+                  <p className="text-sm text-foreground">- {item.claim}</p>
+                  {quote ? (
+                    <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
+                      “{quote}”
+                    </div>
+                  ) : null}
+                  <SourceList sources={item.source_refs} />
+                </div>
+              );
+            })}
           </div>
-        </div>
+        </details>
       ) : null}
 
       {response.what_helps.length ? (
