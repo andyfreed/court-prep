@@ -101,6 +101,39 @@ function truncateText(text: string | null | undefined, maxLength: number) {
   return `${text.slice(0, maxLength).trim()}…`;
 }
 
+function normalizeWhitespace(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function cleanExcerpt(text: string | null | undefined, maxLength: number) {
+  if (!text) return "";
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const alpha = (line.match(/[A-Za-z]/g) ?? []).length;
+      return alpha >= 3 || line.length < 10;
+    });
+  const seen = new Map<string, number>();
+  const deduped = lines.filter((line) => {
+    const count = (seen.get(line) ?? 0) + 1;
+    seen.set(line, count);
+    return count <= 2;
+  });
+  return truncateText(normalizeWhitespace(deduped.join(" ")), maxLength);
+}
+
+function getBlobFileName(blobUrl: string, fallback: string) {
+  try {
+    const url = new URL(blobUrl);
+    const parts = url.pathname.split("/");
+    return parts[parts.length - 1] || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function needsCitationRetry(parsed: ChatResponse) {
   if (!parsed.meta.used_retrieval) return true;
   if (parsed.evidence.length === 0) return true;
@@ -123,6 +156,16 @@ function isContestedTopic(message: string) {
   return /custody|holiday|schedule|support|abuse|violence|relocation|parenting/i.test(
     message,
   );
+}
+
+function isAgreementFocusedQuery(message: string) {
+  return /(separation agreement|agreement|parenting plan|parenting|holiday|holidays|schedule)/i.test(
+    message,
+  );
+}
+
+function isParentingFocusedQuery(message: string) {
+  return /(parenting|holiday|holidays|schedule|custody|visitation|exchange)/i.test(message);
 }
 
 function isDocumentListQuery(message: string) {
@@ -272,6 +315,32 @@ async function runVectorSearch(params: { message: string; vectorStoreId: string 
     "vector_search",
   );
   return response.data ?? [];
+}
+
+function extractSectionHint(text: string) {
+  const patterns = [
+    /parenting plan/i,
+    /holiday/i,
+    /school vacation/i,
+    /vacation/i,
+    /parenting time/i,
+    /schedule/i,
+    /exchanges?/i,
+    /summer/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return match[0];
+    }
+  }
+  return null;
+}
+
+function isIrrelevantParentingSection(text: string) {
+  return /(exhibit\s+[a-z]|real estate|assets|liabilities|property|mortgage|bank|debt|retirement|equity|tax)/i.test(
+    text,
+  );
 }
 
 function parseChatResponse(text: string) {
@@ -462,10 +531,33 @@ export async function POST(req: NextRequest) {
         threadId: threadRecord.id,
       }),
     );
-    const retrievalResults = await runVectorSearch({
+    let retrievalResults = await runVectorSearch({
       message,
       vectorStoreId,
     });
+
+    const agreementCandidates = indexedDocs.filter((doc) => {
+      const fileName = getBlobFileName(doc.blobUrl, doc.title);
+      return /separation agreement/i.test(doc.title) || /separation agreement/i.test(fileName);
+    });
+    const preferredFileIds = agreementCandidates
+      .map((doc) => doc.openaiFileId)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+    if (isAgreementFocusedQuery(message) && preferredFileIds.length > 0) {
+      const preferredSet = new Set(preferredFileIds);
+      const filtered = retrievalResults.filter((result) => preferredSet.has(result.file_id));
+      if (filtered.length > 0) {
+        retrievalResults = filtered;
+      }
+    }
+
+    if (isParentingFocusedQuery(message)) {
+      retrievalResults = retrievalResults.filter((result) => {
+        const contentText = result.content?.map((item) => item.text).join("\n\n") ?? "";
+        return !isIrrelevantParentingSection(contentText);
+      });
+    }
     marks.retrievalReady = Date.now();
     retrievedCount = retrievalResults.length;
     console.log(
@@ -497,10 +589,9 @@ export async function POST(req: NextRequest) {
         if (!result.file_id) continue;
         const doc = docByFileId.get(result.file_id);
         if (!doc) continue;
-        const contentText = truncateText(
-          result.content?.map((item) => item.text).join("\n\n") ?? "",
-          1200,
-        );
+        const rawContent = result.content?.map((item) => item.text).join("\n\n") ?? "";
+        const contentText = cleanExcerpt(rawContent, 450);
+        const sectionHint = extractSectionHint(rawContent);
         retrievedSources.push({
           document_version_id: doc.id,
           label: doc.title,
@@ -508,8 +599,8 @@ export async function POST(req: NextRequest) {
             label: doc.title,
             page_start: null,
             page_end: null,
-            section: null,
-            quote: contentText,
+            section: sectionHint,
+            quote: cleanExcerpt(rawContent, 320),
           },
           excerpt: contentText,
         });
@@ -526,21 +617,42 @@ export async function POST(req: NextRequest) {
       MAIN_CHAT_SYSTEM_PROMPT,
       "You MUST cite using SourceRef objects with document_version_id from RetrievedSources.",
       "Do not cite filenames. Use only document_version_id values provided.",
+      "Answer format requirements:",
+      "- answer.summary must be 1-2 sentences.",
+      "- answer.direct_answer must be readable prose with short sections and bullets.",
+      "- Do NOT paste raw OCR blobs. Use short quotes (<= 2 sentences) in locator.quote only.",
+      "- Every bullet/claim in direct_answer must have at least one SourceRef in evidence.",
       `Allowed document_version_id values: ${retrievedSources
         .map((source) => source.document_version_id)
         .join(", ") || "none"}.`,
     ].join("\n");
 
     const caseIdValue = caseRecord.id;
+    const bulletClaims = retrievedSources.slice(0, 8).map((source) => ({
+      text: `Relevant section from ${source.label}: ${source.excerpt ?? ""}`,
+      source,
+    }));
+    const mentionsHoliday = retrievedSources.some((source) =>
+      /holiday/i.test(source.excerpt ?? ""),
+    );
+    if (isParentingFocusedQuery(message) && !mentionsHoliday && bulletClaims.length > 0) {
+      bulletClaims.unshift({
+        text:
+          "No explicit holiday schedule language appears in the retrieved sections; closest related scheduling language is shown below.",
+        source: bulletClaims[0].source,
+      });
+    }
+
     const stageOneResponse: ChatResponse = {
       answer: {
-        summary: "Retrieved evidence excerpts.",
-        direct_answer:
+        summary:
           retrievedSources.length === 0
             ? "No matching excerpts were found."
-            : retrievedSources
-                .map((source) => `- ${source.label}: ${source.excerpt ?? ""}`)
-                .join("\n"),
+            : "Closest relevant sections from the indexed documents.",
+        direct_answer:
+          bulletClaims.length === 0
+            ? "No matching excerpts were found."
+            : bulletClaims.map((item) => `- ${item.text}`).join("\n"),
         confidence: retrievedSources.length ? "medium" : "low",
         uncertainties: retrievedSources.length
           ? []
@@ -552,23 +664,23 @@ export async function POST(req: NextRequest) {
               },
             ],
       },
-      evidence: retrievedSources.map((source) => ({
-        claim: source.excerpt ?? `Excerpt from ${source.label}`,
+      evidence: bulletClaims.map((item) => ({
+        claim: item.text,
         source_refs: [
           {
             ref_type: "document",
             case_id: caseIdValue,
-            document_version_id: source.document_version_id,
+            document_version_id: item.source.document_version_id,
             transcript_message_ids: null,
             email_id: null,
             timeline_event_id: null,
             lawyer_note_id: null,
             locator: {
-              label: source.label,
-              page_start: source.locator.page_start ?? null,
-              page_end: source.locator.page_end ?? null,
-              section: source.locator.section ?? null,
-              quote: source.locator.quote ?? null,
+              label: item.source.label,
+              page_start: item.source.locator.page_start ?? null,
+              page_end: item.source.locator.page_end ?? null,
+              section: item.source.locator.section ?? null,
+              quote: item.source.locator.quote ?? null,
               timestamp: null,
             },
             confidence: "medium",
@@ -578,13 +690,7 @@ export async function POST(req: NextRequest) {
       })),
       what_helps: [],
       what_hurts: [],
-      next_steps: [
-        {
-          action: "Review the excerpts and ask a narrower question.",
-          owner: "user",
-          priority: "medium",
-        },
-      ],
+      next_steps: [],
       questions_for_lawyer: [],
       missing_or_requested_docs: [],
       meta: {
