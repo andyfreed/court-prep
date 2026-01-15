@@ -227,3 +227,32 @@ Return ONLY valid JSON matching:
   "should_create_lawyer_note": true|false
 }
 `;
+
+export const CASE_MEMORY_EXTRACTION_PROMPT = `
+You are extracting durable case memory from a single document.
+
+Return ONLY valid JSON matching:
+{
+  "document_type": "agreement|order|affidavit|financial|communication|medical|school|other",
+  "entities": [
+    { "type": "person|child|attorney|judge|org|address", "name": "string", "attributes": {}, "citations": [SourceRef], "confidence": "high|medium|low" }
+  ],
+  "facts": [
+    { "type": "parenting_rule|custody|support|restriction|definition|asset|debt|schedule|education|medical|travel|communication|other", "key": "string", "value": {}, "citations": [SourceRef], "confidence": "high|medium|low" }
+  ],
+  "timeline": [
+    { "event_date": "YYYY-MM-DD|null", "title": "string", "description": "string", "citations": [SourceRef], "confidence": "high|medium|low" }
+  ],
+  "obligations": [
+    { "obligation_type": "payment|exchange|notice|filing|other", "due_date": "YYYY-MM-DD|null", "recurrence": "string|null", "description": "string", "citations": [SourceRef], "confidence": "high|medium|low" }
+  ]
+}
+
+Rules:
+- Every item must include at least one SourceRef citation.
+- SourceRef.document_version_id MUST be the provided document ID.
+- Use page_start/page_end from the provided page markers when possible.
+- locator.label should be the document title.
+- locator.section should be a best-effort heading (e.g., Parenting Plan, Holidays, School Vacations).
+- locator.quote must be short (<= 2 sentences). Do NOT paste long excerpts.
+`;

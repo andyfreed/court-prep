@@ -64,6 +64,8 @@ model Case {
   id            String         @id @default(cuid())
   name          String
   vectorStoreId String?
+  memoryRebuildInProgress Boolean @default(false)
+  memoryRebuildRequestedAt DateTime?
   documents     Document[]
   ingestJobs    DocumentIngestJob[]
   timeline      TimelineEvent[]
@@ -85,6 +87,7 @@ model Document {
   blobUrl       String
   openaiFileId  String?
   vectorStoreId String?
+  documentType  String?
   mimeType      String?
   size          Int?
   createdAt     DateTime @default(now())
@@ -97,6 +100,7 @@ model Document {
 model TimelineEvent {
   id         String   @id @default(cuid())
   caseId     String
+  documentId String?
   occurredAt DateTime?
   eventDate  DateTime?
   precision  String
@@ -110,6 +114,8 @@ model TimelineEvent {
   createdAt  DateTime @default(now())
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, documentId])
 }
 
 enum CaseEntityType {
@@ -148,19 +154,24 @@ enum ObligationType {
 model CaseEntity {
   id            String         @id @default(cuid())
   caseId        String
+  documentId    String?
   type          CaseEntityType
   name          String
   attributesJson Json?
+  citationsJson Json
+  confidence    String
   createdAt     DateTime       @default(now())
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
   @@index([caseId, type])
+  @@index([caseId, documentId])
 }
 
 model CaseFact {
   id            String       @id @default(cuid())
   caseId        String
+  documentId    String?
   type          CaseFactType
   key           String
   valueJson     Json
@@ -173,11 +184,13 @@ model CaseFact {
 
   @@index([caseId, type])
   @@index([caseId, key])
+  @@index([caseId, documentId])
 }
 
 model Obligation {
   id            String         @id @default(cuid())
   caseId        String
+  documentId    String?
   obligationType ObligationType
   dueDate       DateTime?
   recurrence    String?
@@ -190,6 +203,7 @@ model Obligation {
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
   @@index([caseId, obligationType])
+  @@index([caseId, documentId])
 }
 
 model DocumentChunk {

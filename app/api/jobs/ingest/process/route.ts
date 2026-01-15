@@ -12,6 +12,7 @@ import { prisma } from "@/lib/db";
 import { ensureVectorStore, getOrCreateCase } from "@/lib/cases";
 import { createResponses, getOpenAI } from "@/lib/openai";
 import { embedTexts, resolveEmbeddingStorage } from "@/lib/embeddings";
+import { acquireMemoryRebuildLock, rebuildCaseMemory, releaseMemoryRebuildLock } from "@/lib/memory";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -434,6 +435,18 @@ async function processJob(jobId: string) {
         documentId: updatedDocument.id,
       },
     });
+
+    const acquired = await acquireMemoryRebuildLock(job.caseId);
+    if (acquired) {
+      try {
+        await rebuildCaseMemory({
+          caseId: job.caseId,
+          documentIds: [updatedDocument.id],
+        });
+      } finally {
+        await releaseMemoryRebuildLock(job.caseId);
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await prisma.documentIngestJob.update({
