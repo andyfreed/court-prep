@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { handleUpload } from "@vercel/blob";
+import { handleUpload } from "@vercel/blob/client";
 
 import { prisma } from "@/lib/db";
 import { ensureVectorStore } from "@/lib/cases";
