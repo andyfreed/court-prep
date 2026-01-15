@@ -27,12 +27,24 @@ type RetrievedSource = {
   document_version_id: string;
   label: string;
   locator: {
+    label: string;
     page_start?: number | null;
     page_end?: number | null;
     section?: string | null;
     quote?: string | null;
   };
   excerpt?: string | null;
+};
+
+type FileSearchContent = {
+  text?: string | null;
+};
+
+type FileSearchResult = {
+  file_id?: string;
+  page?: number | null;
+  section?: string | null;
+  content?: FileSearchContent | null;
 };
 
 function extractJson(text: string) {
@@ -68,6 +80,82 @@ function isContestedTopic(message: string) {
   );
 }
 
+function isDocumentListQuery(message: string) {
+  return /what documents are on file|documents on file|list documents|what docs do we have/i.test(
+    message,
+  );
+}
+
+function buildDocumentSourceRef(params: {
+  caseId: string;
+  documentVersionId: string;
+  label: string;
+}) {
+  return {
+    ref_type: "document" as const,
+    case_id: params.caseId,
+    document_version_id: params.documentVersionId,
+    transcript_message_ids: null,
+    email_id: null,
+    timeline_event_id: null,
+    lawyer_note_id: null,
+    locator: {
+      label: params.label,
+      page_start: null,
+      page_end: null,
+      section: null,
+      quote: null,
+      timestamp: null,
+    },
+    confidence: "high" as const,
+  };
+}
+
+function buildDocumentsListResponse(params: {
+  caseId: string;
+  documents: Array<{ document_version_id: string; title: string }>;
+}) {
+  const lines = params.documents.map(
+    (doc) => `- ${doc.title} (ID: ${doc.document_version_id})`,
+  );
+
+  return {
+    answer: {
+      summary: "Documents on file for this case.",
+      direct_answer:
+        params.documents.length === 0
+          ? "No documents are on file yet."
+          : ["Documents on file:", ...lines].join("\n"),
+      confidence: "high" as const,
+      uncertainties: [],
+    },
+    evidence: params.documents.map((doc) => ({
+      claim: `Document on file: ${doc.title}`,
+      source_refs: [
+        buildDocumentSourceRef({
+          caseId: params.caseId,
+          documentVersionId: doc.document_version_id,
+          label: doc.title,
+        }),
+      ],
+      type: "fact" as const,
+    })),
+    what_helps: [],
+    what_hurts: [],
+    next_steps:
+      params.documents.length === 0
+        ? [{ action: "Upload a case document.", owner: "user", priority: "high" as const }]
+        : [],
+    questions_for_lawyer: [],
+    missing_or_requested_docs: [],
+    meta: {
+      used_retrieval: false,
+      retrieval_notes: "Document list returned from the database.",
+      safety_note: "Neutral, document-grounded guidance only.",
+    },
+  } satisfies ChatResponse;
+}
+
 function validateCitationCoverage(params: {
   parsed: ChatResponse;
   hasFiles: boolean;
@@ -88,14 +176,35 @@ function validateCitationCoverage(params: {
   return helpsMissing || hurtsMissing;
 }
 
-function extractFileSearchResults(response: any) {
-  const output = Array.isArray(response?.output) ? response.output : [];
-  const results: any[] = [];
-  for (const item of output) {
-    if (item?.type === "file_search_call" && Array.isArray(item?.results)) {
-      results.push(...item.results);
+function extractFileSearchResults(response: unknown) {
+  const output = (response as { output?: unknown })?.output;
+  const items = Array.isArray(output) ? output : [];
+  const results: FileSearchResult[] = [];
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as { type?: unknown; results?: unknown };
+    if (entry.type !== "file_search_call" || !Array.isArray(entry.results)) continue;
+
+    for (const rawResult of entry.results) {
+      if (!rawResult || typeof rawResult !== "object") continue;
+      const result = rawResult as Record<string, unknown>;
+      const file_id = typeof result.file_id === "string" ? result.file_id : undefined;
+      const page = typeof result.page === "number" ? result.page : null;
+      const section = typeof result.section === "string" ? result.section : null;
+      const contentRaw = result.content as Record<string, unknown> | null | undefined;
+      const contentText =
+        contentRaw && typeof contentRaw.text === "string" ? contentRaw.text : null;
+
+      results.push({
+        file_id,
+        page,
+        section,
+        content: contentText ? { text: contentText } : null,
+      });
     }
   }
+
   return results;
 }
 
@@ -220,6 +329,40 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    if (isDocumentListQuery(storedUserMessage)) {
+      const docList =
+        documentsList?.length
+          ? documentsList.map((doc) => ({
+              document_version_id: doc.document_version_id,
+              title: doc.title,
+            }))
+          : (
+              await prisma.document.findMany({
+                where: { caseId: caseRecord.id },
+                orderBy: { createdAt: "desc" },
+              })
+            ).map((doc) => ({
+              document_version_id: doc.id,
+              title: doc.title,
+            }));
+
+      const response = buildDocumentsListResponse({
+        caseId: caseRecord.id,
+        documents: docList,
+      });
+
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          role: "assistant",
+          content: response,
+        },
+      });
+
+      return NextResponse.json(response);
+    }
+
     if (!hasIndexedFiles) {
       const emptyResponse: ChatResponse = {
         answer: {
@@ -283,8 +426,8 @@ export async function POST(req: NextRequest) {
       const fileIds = Array.from(
         new Set(
           retrievalResults
-            .map((item: any) => item?.file_id)
-            .filter((id: string | undefined) => Boolean(id)),
+            .map((item) => item.file_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
         ),
       );
       const docs = await prisma.document.findMany({
@@ -293,12 +436,14 @@ export async function POST(req: NextRequest) {
       const docByFileId = new Map(docs.map((doc) => [doc.openaiFileId, doc]));
 
       for (const result of retrievalResults) {
+        if (!result.file_id) continue;
         const doc = docByFileId.get(result.file_id);
         if (!doc) continue;
         retrievedSources.push({
           document_version_id: doc.id,
           label: doc.title,
           locator: {
+            label: doc.title,
             page_start: result?.page ?? null,
             page_end: result?.page ?? null,
             section: result?.section ?? null,
@@ -321,6 +466,9 @@ export async function POST(req: NextRequest) {
       MAIN_CHAT_SYSTEM_PROMPT,
       "You MUST cite using SourceRef objects with document_version_id from RetrievedSources.",
       "Do not cite filenames. Use only document_version_id values provided.",
+      `Allowed document_version_id values: ${retrievedSources
+        .map((source) => source.document_version_id)
+        .join(", ") || "none"}.`,
     ].join("\n");
 
     const initialResponse = await runResponse({
