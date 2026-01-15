@@ -384,22 +384,25 @@ export async function POST(req: NextRequest) {
     });
 
     if (isDocumentListQuery(storedUserMessage)) {
-      const docList =
-        documentsList?.length
-          ? documentsList.map((doc) => ({
-              document_version_id: doc.document_version_id,
-              title: doc.title,
-              status: doc.status ?? undefined,
-            }))
-          : (
-              await prisma.document.findMany({
-                where: { caseId: caseRecord.id },
-                orderBy: { createdAt: "desc" },
-              })
-            ).map((doc) => ({
-              document_version_id: doc.id,
-              title: doc.title,
-            }));
+      const docList: Array<{
+        document_version_id: string;
+        title: string;
+        status?: string;
+      }> = documentsList?.length
+        ? documentsList.map((doc) => ({
+            document_version_id: doc.document_version_id,
+            title: doc.title,
+            status: doc.status ?? undefined,
+          }))
+        : (
+            await prisma.document.findMany({
+              where: { caseId: caseRecord.id },
+              orderBy: { createdAt: "desc" },
+            })
+          ).map((doc) => ({
+            document_version_id: doc.id,
+            title: doc.title,
+          }));
 
       if (!documentsList?.length) {
         const jobs = await prisma.documentIngestJob.findMany({
