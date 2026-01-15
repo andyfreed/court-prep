@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { getOpenAI } from "@/lib/openai";
+import { buildResponsesParams, getOpenAI } from "@/lib/openai";
 import { TimelineExtractResponseSchema } from "@/lib/schemas";
 import { TIMELINE_EXTRACTION_PROMPT } from "@/lib/prompts";
 import { getOrCreateCase } from "@/lib/cases";
@@ -40,11 +40,13 @@ export async function POST(req: NextRequest) {
       sourceText,
     ].join("\n\n");
 
-    const response = await getOpenAI().responses.create({
-      model: "gpt-5.2-pro",
-      instructions: TIMELINE_EXTRACTION_PROMPT,
-      input,
-    });
+    const response = await getOpenAI().responses.create(
+      buildResponsesParams({
+        model: "gpt-5.2-pro",
+        instructions: TIMELINE_EXTRACTION_PROMPT,
+        input,
+      }),
+    );
 
     const payload = JSON.parse(extractJson(response.output_text ?? ""));
     const parsed = TimelineExtractResponseSchema.safeParse(payload);

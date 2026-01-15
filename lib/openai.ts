@@ -14,3 +14,7 @@ export function getOpenAI() {
 
   return client;
 }
+
+export function buildResponsesParams<T extends Record<string, unknown>>(base: T): T {
+  return { ...base };
+}
