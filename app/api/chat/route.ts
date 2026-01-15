@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { ensureVectorStore, getOrCreateDefaultThread } from "@/lib/cases";
-import { createResponses, getOpenAI } from "@/lib/openai";
+import { createResponses } from "@/lib/openai";
 import { prisma } from "@/lib/db";
 import {
   ChatResponseSchema,
@@ -333,6 +333,7 @@ export async function POST(req: NextRequest) {
   let caseRecord: { id: string; name: string } | null = null;
   let threadRecord: { id: string } | null = null;
   let storedUserMessage: string | null = null;
+  const requestId = crypto.randomUUID();
   let hasIndexedFiles: boolean | undefined;
   let retrievedCount: number | undefined;
   const marks: StepMarks = { t0: Date.now() };
@@ -441,71 +442,88 @@ export async function POST(req: NextRequest) {
 
     const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
     marks.vectorStoreReady = Date.now();
-    const files = await withTimeout(
-      () => getOpenAI().vectorStores.files.list(vectorStoreId),
-      20000,
-      "vectorStores.files.list",
+    console.log(
+      JSON.stringify({
+        step: "vector_store_ready",
+        requestId,
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+        ms: { vectorStoreReady: marks.vectorStoreReady - marks.t0 },
+      }),
     );
-    marks.fileListReady = Date.now();
-    hasIndexedFiles = (files?.data?.length ?? 0) > 0;
 
+    const indexedDocs = await prisma.document.findMany({
+      where: { caseId: caseRecord.id, openaiFileId: { not: null } },
+      orderBy: { createdAt: "desc" },
+    });
+    const allDocs = await prisma.document.findMany({
+      where: { caseId: caseRecord.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const jobs = await prisma.documentIngestJob.findMany({
+      where: { caseId: caseRecord.id },
+      orderBy: { updatedAt: "desc" },
+    });
+    const jobByDocumentId = new Map(
+      jobs
+        .filter((job) => job.documentId)
+        .map((job) => [job.documentId!, job.status]),
+    );
+
+    hasIndexedFiles = indexedDocs.length > 0;
     if (!hasIndexedFiles) {
-      const emptyResponse: ChatResponse = {
-        answer: {
-          summary: "No indexed documents yet.",
-          direct_answer:
-            "I do not have any indexed documents for this case yet. Upload at least one document so I can cite it in answers.",
-          confidence: "low",
-          uncertainties: [
-            {
-              topic: "Document coverage",
-              why: "The case has no files indexed in the vector store yet.",
-              needed_sources: ["document"],
-            },
-          ],
-        },
-        evidence: [],
-        what_helps: [],
-        what_hurts: [],
-        next_steps: [
-          { action: "Upload a case document.", owner: "user", priority: "high" },
-        ],
-        questions_for_lawyer: [],
-        missing_or_requested_docs: [
-          {
-            doc_name: "Primary custody agreement or order",
-            why: "Needed to answer custody-specific questions with citations.",
-            priority: "high",
-          },
-        ],
-        meta: {
-          used_retrieval: false,
-          retrieval_notes: "No vector store files found for this case.",
-          safety_note: "Neutral, document-grounded guidance only.",
-        },
-      };
+      const response = buildDocumentsListResponse({
+        caseId: caseRecord.id,
+        documents: allDocs.map((doc) => ({
+          document_version_id: doc.id,
+          title: doc.title,
+          status: jobByDocumentId.get(doc.id) ?? "uploaded",
+        })),
+      });
+      response.answer.summary = "No indexed documents yet.";
+      response.answer.direct_answer = [
+        "I do not have any indexed documents for this case yet.",
+        response.answer.direct_answer,
+      ].join("\n\n");
+      response.meta.used_retrieval = false;
+      response.meta.retrieval_notes = `No indexed docs. requestId=${requestId}`;
 
       await prisma.chatMessage.create({
         data: {
           caseId: caseRecord.id,
           threadId: threadRecord.id,
           role: "assistant",
-          content: emptyResponse,
+          content: response,
         },
       });
 
-      return NextResponse.json(emptyResponse);
+      return NextResponse.json(response);
     }
-    const documentsContext = documentsList?.length
-      ? `Documents on file (from DB): ${JSON.stringify(documentsList)}`
-      : "Documents on file (from DB): none provided";
 
+    console.log(
+      JSON.stringify({
+        step: "file_search_start",
+        requestId,
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+      }),
+    );
     const retrievalResults = (await runRetrieval({
       message,
       vectorStoreId,
     })).slice(0, 6);
     marks.retrievalReady = Date.now();
     retrievedCount = retrievalResults.length;
+    console.log(
+      JSON.stringify({
+        step: "file_search_done",
+        requestId,
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+        retrievedCount,
+        ms: { retrieval: marks.retrievalReady - marks.t0 },
+      }),
+    );
 
     const retrievedSources: RetrievedSource[] = [];
     if (retrievalResults.length > 0) {
@@ -542,7 +560,6 @@ export async function POST(req: NextRequest) {
 
     const baseInput = [
       `Case ID: ${caseRecord.id}`,
-      documentsContext,
       `RetrievedSources: ${JSON.stringify(retrievedSources)}`,
       `User question: ${message}`,
     ].join("\n\n");
@@ -556,15 +573,113 @@ export async function POST(req: NextRequest) {
         .join(", ") || "none"}.`,
     ].join("\n");
 
-    const initialResponse = await runResponse({
-      instructions: citationInstruction,
-      input: baseInput,
-      vectorStoreId,
-      requireFileSearch: true,
-      timeoutMs: 45000,
-      label: "synthesis",
-    });
-    marks.synthesisReady = Date.now();
+    const caseIdValue = caseRecord.id;
+    const stageOneResponse: ChatResponse = {
+      answer: {
+        summary: "Retrieved evidence excerpts.",
+        direct_answer:
+          retrievedSources.length === 0
+            ? "No matching excerpts were found."
+            : retrievedSources
+                .map((source) => `- ${source.label}: ${source.excerpt ?? ""}`)
+                .join("\n"),
+        confidence: retrievedSources.length ? "medium" : "low",
+        uncertainties: retrievedSources.length
+          ? []
+          : [
+              {
+                topic: "Matching evidence",
+                why: "Retrieval returned no excerpts.",
+                needed_sources: ["document"],
+              },
+            ],
+      },
+      evidence: retrievedSources.map((source) => ({
+        claim: source.excerpt ?? `Excerpt from ${source.label}`,
+        source_refs: [
+          {
+            ref_type: "document",
+            case_id: caseIdValue,
+            document_version_id: source.document_version_id,
+            transcript_message_ids: null,
+            email_id: null,
+            timeline_event_id: null,
+            lawyer_note_id: null,
+            locator: {
+              label: source.label,
+              page_start: source.locator.page_start ?? null,
+              page_end: source.locator.page_end ?? null,
+              section: source.locator.section ?? null,
+              quote: source.locator.quote ?? null,
+              timestamp: null,
+            },
+            confidence: "medium",
+          },
+        ],
+        type: "quote",
+      })),
+      what_helps: [],
+      what_hurts: [],
+      next_steps: [
+        {
+          action: "Review the excerpts and ask a narrower question.",
+          owner: "user",
+          priority: "medium",
+        },
+      ],
+      questions_for_lawyer: [],
+      missing_or_requested_docs: [],
+      meta: {
+        used_retrieval: true,
+        retrieval_notes: `Stage 1 response. requestId=${requestId}`,
+        safety_note: "Neutral, document-grounded guidance only.",
+      },
+    };
+
+    console.log(
+      JSON.stringify({
+        step: "synthesis_start",
+        requestId,
+        caseId: caseRecord.id,
+        threadId: threadRecord.id,
+      }),
+    );
+    let initialResponse;
+    try {
+      initialResponse = await runResponse({
+        instructions: citationInstruction,
+        input: baseInput,
+        vectorStoreId,
+        requireFileSearch: true,
+        timeoutMs: 45000,
+        label: "synthesis",
+      });
+      marks.synthesisReady = Date.now();
+      console.log(
+        JSON.stringify({
+          step: "synthesis_done",
+          requestId,
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          ms: { synthesis: marks.synthesisReady - marks.t0 },
+        }),
+      );
+    } catch (synthesisError) {
+      const errMsg =
+        synthesisError instanceof Error ? synthesisError.message : String(synthesisError);
+      if (/timed out/i.test(errMsg)) {
+        await prisma.chatMessage.create({
+          data: {
+            caseId: caseRecord.id,
+            threadId: threadRecord.id,
+            role: "assistant",
+            content: stageOneResponse,
+          },
+        });
+        return NextResponse.json(stageOneResponse);
+      }
+      throw synthesisError;
+    }
 
     let parsed = parseChatResponse(initialResponse.text);
     marks.validated = Date.now();
@@ -689,16 +804,17 @@ export async function POST(req: NextRequest) {
         documents: docs.map((doc) => ({
           document_version_id: doc.id,
           title: doc.title,
-          status: jobByDocumentId.get(doc.id) ?? "done",
+          status: jobByDocumentId.get(doc.id) ?? "uploaded",
         })),
       });
       response.answer.summary = "Retrieval timed out.";
       response.answer.direct_answer = [
         "I could not retrieve evidence in time.",
+        "If your uploads are still processing, click Process now to finish indexing.",
         response.answer.direct_answer,
       ].join("\n\n");
       response.meta.used_retrieval = false;
-      response.meta.retrieval_notes = "file_search timed out";
+      response.meta.retrieval_notes = `file_search timed out. requestId=${requestId}`;
 
       await prisma.chatMessage.create({
         data: {
@@ -745,7 +861,7 @@ export async function POST(req: NextRequest) {
       missing_or_requested_docs: [],
       meta: {
         used_retrieval: false,
-        retrieval_notes: "Request failed before completing.",
+        retrieval_notes: `Request failed before completing. requestId=${requestId}`,
         safety_note: "Neutral, document-grounded guidance only.",
       },
     };
