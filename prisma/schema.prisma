@@ -65,6 +65,7 @@ model Case {
   name          String
   vectorStoreId String?
   documents     Document[]
+  ingestJobs    DocumentIngestJob[]
   timeline      TimelineEvent[]
   insights      Insight[]
   lawyerNotes   LawyerNote[]
@@ -84,6 +85,7 @@ model Document {
   mimeType      String?
   size          Int?
   createdAt     DateTime @default(now())
+  ingestJob     DocumentIngestJob?
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
 }
@@ -144,4 +146,35 @@ model ChatMessage {
 
   case   Case       @relation(fields: [caseId], references: [id], onDelete: Cascade)
   thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+}
+
+enum DocumentIngestStatus {
+  queued
+  uploaded
+  extracting
+  ready_to_index
+  indexing
+  done
+  error
+}
+
+model DocumentIngestJob {
+  id                   String               @id @default(cuid())
+  caseId               String
+  filename             String
+  mimeType             String?
+  sizeBytes            Int?
+  blobUrl              String
+  status               DocumentIngestStatus @default(queued)
+  error                String?
+  extractedTextBlobUrl String?
+  openaiFileId         String?
+  documentId           String?              @unique
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  case     Case      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  document Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([caseId, status])
 }
