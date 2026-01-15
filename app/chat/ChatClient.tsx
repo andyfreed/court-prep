@@ -318,16 +318,17 @@ export default function ChatClient({
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
+    const element = list;
 
     function handleScroll() {
       const threshold = 180;
-      const { scrollTop, scrollHeight, clientHeight } = list;
+      const { scrollTop, scrollHeight, clientHeight } = element;
       setIsNearBottom(scrollHeight - scrollTop - clientHeight < threshold);
     }
 
     handleScroll();
-    list.addEventListener("scroll", handleScroll, { passive: true });
-    return () => list.removeEventListener("scroll", handleScroll);
+    element.addEventListener("scroll", handleScroll, { passive: true });
+    return () => element.removeEventListener("scroll", handleScroll);
   }, []);
 
   useEffect(() => {
