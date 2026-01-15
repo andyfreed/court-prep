@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { ensureVectorStore, getOrCreateDefaultThread } from "@/lib/cases";
-import { createResponses } from "@/lib/openai";
+import { createResponses, getOpenAI } from "@/lib/openai";
 import { prisma } from "@/lib/db";
 import {
   ChatResponseSchema,
@@ -26,17 +26,6 @@ type RetrievedSource = {
     quote?: string | null;
   };
   excerpt?: string | null;
-};
-
-type FileSearchContent = {
-  text?: string | null;
-};
-
-type FileSearchResult = {
-  file_id?: string;
-  page?: number | null;
-  section?: string | null;
-  content?: FileSearchContent | null;
 };
 
 type StepMarks = {
@@ -104,6 +93,12 @@ function extractJson(text: string) {
     throw new Error("No JSON object found in model output.");
   }
   return text.slice(first, last + 1);
+}
+
+function truncateText(text: string | null | undefined, maxLength: number) {
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trim()}…`;
 }
 
 function needsCitationRetry(parsed: ChatResponse) {
@@ -231,68 +226,20 @@ function validateCitationCoverage(params: {
   return helpsMissing || hurtsMissing;
 }
 
-function extractFileSearchResults(response: unknown) {
-  const output = (response as { output?: unknown })?.output;
-  const items = Array.isArray(output) ? output : [];
-  const results: FileSearchResult[] = [];
-
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
-    const entry = item as { type?: unknown; results?: unknown };
-    if (entry.type !== "file_search_call" || !Array.isArray(entry.results)) continue;
-
-    for (const rawResult of entry.results) {
-      if (!rawResult || typeof rawResult !== "object") continue;
-      const result = rawResult as Record<string, unknown>;
-      const file_id = typeof result.file_id === "string" ? result.file_id : undefined;
-      const page = typeof result.page === "number" ? result.page : null;
-      const section = typeof result.section === "string" ? result.section : null;
-      const contentRaw = result.content as Record<string, unknown> | null | undefined;
-      const contentText =
-        contentRaw && typeof contentRaw.text === "string" ? contentRaw.text : null;
-
-      results.push({
-        file_id,
-        page,
-        section,
-        content: contentText ? { text: contentText } : null,
-      });
-    }
-  }
-
-  return results;
-}
-
 async function runResponse(params: {
   instructions: string;
   input: string;
-  vectorStoreId?: string;
-  requireFileSearch?: boolean;
+  model: string;
   timeoutMs: number;
   label: string;
 }) {
-  const tools = params.vectorStoreId
-    ? [
-        {
-          type: "file_search" as const,
-          vector_store_ids: [params.vectorStoreId],
-        },
-      ]
-    : undefined;
-  const include = params.vectorStoreId
-    ? (["file_search_call.results"] as const)
-    : undefined;
-
   const response = await withTimeout(
     (signal) =>
       createResponses(
         {
-          model: "gpt-5.2-pro",
+          model: params.model,
           instructions: params.instructions,
           input: params.input,
-          tools,
-          tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
-          include,
           max_output_tokens: 1200,
         } as unknown as Parameters<typeof createResponses>[0],
         { signal },
@@ -303,21 +250,28 @@ async function runResponse(params: {
 
   return {
     text: (response as { output_text?: string }).output_text ?? "",
-    results: extractFileSearchResults(response),
   };
 }
 
-async function runRetrieval(params: { message: string; vectorStoreId: string }) {
-  const retrieval = await runResponse({
-    instructions:
-      "Run file_search and return ONLY the word OK. Do not include any JSON.",
-    input: params.message,
-    vectorStoreId: params.vectorStoreId,
-    requireFileSearch: true,
-    timeoutMs: 30000,
-    label: "file_search",
-  });
-  return retrieval.results;
+async function runVectorSearch(params: { message: string; vectorStoreId: string }) {
+  const response = await withTimeout(
+    (signal) =>
+      getOpenAI().vectorStores.search(
+        params.vectorStoreId,
+        {
+          query: params.message,
+          max_num_results: 6,
+          rewrite_query: false,
+          ranking_options: {
+            ranker: "none",
+          },
+        },
+        { signal },
+      ),
+    20000,
+    "vector_search",
+  );
+  return response.data ?? [];
 }
 
 function parseChatResponse(text: string) {
@@ -502,21 +456,21 @@ export async function POST(req: NextRequest) {
 
     console.log(
       JSON.stringify({
-        step: "file_search_start",
+        step: "vector_search_start",
         requestId,
         caseId: caseRecord.id,
         threadId: threadRecord.id,
       }),
     );
-    const retrievalResults = (await runRetrieval({
+    const retrievalResults = await runVectorSearch({
       message,
       vectorStoreId,
-    })).slice(0, 6);
+    });
     marks.retrievalReady = Date.now();
     retrievedCount = retrievalResults.length;
     console.log(
       JSON.stringify({
-        step: "file_search_done",
+        step: "vector_search_done",
         requestId,
         caseId: caseRecord.id,
         threadId: threadRecord.id,
@@ -543,17 +497,21 @@ export async function POST(req: NextRequest) {
         if (!result.file_id) continue;
         const doc = docByFileId.get(result.file_id);
         if (!doc) continue;
+        const contentText = truncateText(
+          result.content?.map((item) => item.text).join("\n\n") ?? "",
+          1200,
+        );
         retrievedSources.push({
           document_version_id: doc.id,
           label: doc.title,
           locator: {
             label: doc.title,
-            page_start: result?.page ?? null,
-            page_end: result?.page ?? null,
-            section: result?.section ?? null,
-            quote: result?.content?.text ?? null,
+            page_start: null,
+            page_end: null,
+            section: null,
+            quote: contentText,
           },
-          excerpt: result?.content?.text ?? null,
+          excerpt: contentText,
         });
       }
     }
@@ -636,6 +594,18 @@ export async function POST(req: NextRequest) {
       },
     };
 
+    if (retrievedSources.length === 0) {
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          role: "assistant",
+          content: stageOneResponse,
+        },
+      });
+      return NextResponse.json(stageOneResponse);
+    }
+
     console.log(
       JSON.stringify({
         step: "synthesis_start",
@@ -649,8 +619,7 @@ export async function POST(req: NextRequest) {
       initialResponse = await runResponse({
         instructions: citationInstruction,
         input: baseInput,
-        vectorStoreId,
-        requireFileSearch: true,
+        model: "gpt-5.2-pro",
         timeoutMs: 45000,
         label: "synthesis",
       });
@@ -705,8 +674,7 @@ export async function POST(req: NextRequest) {
       const retryResponse = await runResponse({
         instructions: enforcement,
         input: baseInput,
-        vectorStoreId,
-        requireFileSearch: true,
+        model: "gpt-5.2-pro",
         timeoutMs: 45000,
         label: "synthesis_retry",
       });
@@ -782,7 +750,7 @@ export async function POST(req: NextRequest) {
     const isTimeout = /timed out/i.test(message);
     if (
       isTimeout &&
-      /file_search/i.test(message) &&
+      /vector_search/i.test(message) &&
       caseRecord &&
       threadRecord
     ) {
@@ -814,7 +782,7 @@ export async function POST(req: NextRequest) {
         response.answer.direct_answer,
       ].join("\n\n");
       response.meta.used_retrieval = false;
-      response.meta.retrieval_notes = `file_search timed out. requestId=${requestId}`;
+      response.meta.retrieval_notes = `vector_search timed out. requestId=${requestId}`;
 
       await prisma.chatMessage.create({
         data: {
