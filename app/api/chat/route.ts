@@ -411,7 +411,7 @@ export async function POST(req: NextRequest) {
     const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
     marks.vectorStoreReady = Date.now();
     const files = await withTimeout(
-      (signal) => getOpenAI().vectorStores.files.list(vectorStoreId, { signal }),
+      () => getOpenAI().vectorStores.files.list(vectorStoreId),
       20000,
       "vectorStores.files.list",
     );
