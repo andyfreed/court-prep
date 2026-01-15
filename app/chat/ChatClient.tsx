@@ -313,6 +313,7 @@ export default function ChatClient({
   const listRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastUserMessageRef = useRef<string | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
 
   const threadList = useMemo(() => threads, [threads]);
 
@@ -495,6 +496,24 @@ export default function ChatClient({
     }
   }
 
+  async function handleRebuildMemory() {
+    setMemoryStatus("Rebuilding case memory...");
+    const response = await fetch("/api/jobs/memory/rebuild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ caseId }),
+    });
+    if (response.status === 202) {
+      setMemoryStatus("Memory rebuild already in progress.");
+      return;
+    }
+    if (!response.ok) {
+      setMemoryStatus("Memory rebuild failed.");
+      return;
+    }
+    setMemoryStatus("Memory rebuild completed.");
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-[240px_1fr] h-[calc(100vh-120px)]">
       <aside className="hidden rounded-xl border bg-card p-4 lg:block">
@@ -534,11 +553,21 @@ export default function ChatClient({
       </aside>
 
       <section className="flex min-h-0 flex-col space-y-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Case Chat</h1>
-          <p className="text-muted-foreground">
-            Ask questions grounded in your case documents and get cited answers.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-semibold">Case Chat</h1>
+            <p className="text-muted-foreground">
+              Ask questions grounded in your case documents and get cited answers.
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <Button type="button" variant="outline" onClick={handleRebuildMemory}>
+              Rebuild case memory
+            </Button>
+            {memoryStatus ? (
+              <div className="text-xs text-muted-foreground">{memoryStatus}</div>
+            ) : null}
+          </div>
         </div>
 
         <div
@@ -559,7 +588,7 @@ export default function ChatClient({
               >
                 <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                   <span>
-                    {message.role === "user" ? "You" : "Assistant"} - {" "}
+                    {message.role === "user" ? "You" : "Assistant"} -{" "}
                     {formatTimestamp(message.createdAt)}
                   </span>
                   <button

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { ensureVectorStore, getOrCreateDefaultThread } from "@/lib/cases";
-import { createResponses, getOpenAI } from "@/lib/openai";
+import { getOrCreateDefaultThread } from "@/lib/cases";
+import { createResponses } from "@/lib/openai";
+import { embedTexts, resolveEmbeddingStorage } from "@/lib/embeddings";
 import { prisma } from "@/lib/db";
 import {
   ChatResponseSchema,
@@ -168,6 +169,12 @@ function isParentingFocusedQuery(message: string) {
   return /(parenting|holiday|holidays|schedule|custody|visitation|exchange)/i.test(message);
 }
 
+function isMemoryQuery(message: string) {
+  return /(rule|schedule|custody|support|holiday|parenting|deadline|notice|obligation|timeline|when|date|travel|communication)/i.test(
+    message,
+  );
+}
+
 function isDocumentListQuery(message: string) {
   return /what documents are (on file|uploaded)|documents on file|list documents|what docs do we have|what files are uploaded|list files|list the files|list uploaded files|show uploaded files|what files do we have|what files are there/i.test(
     message,
@@ -296,25 +303,159 @@ async function runResponse(params: {
   };
 }
 
-async function runVectorSearch(params: { message: string; vectorStoreId: string }) {
-  const response = await withTimeout(
-    (signal) =>
-      getOpenAI().vectorStores.search(
-        params.vectorStoreId,
-        {
-          query: params.message,
-          max_num_results: 6,
-          rewrite_query: false,
-          ranking_options: {
-            ranker: "none",
-          },
-        },
-        { signal },
-      ),
-    20000,
-    "vector_search",
-  );
-  return response.data ?? [];
+function formatValueSummary(value: unknown) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const summary =
+      (typeof record.summary === "string" && record.summary) ||
+      (typeof record.rule === "string" && record.rule) ||
+      (typeof record.value === "string" && record.value);
+    if (summary) return summary;
+    return JSON.stringify(record).slice(0, 240);
+  }
+  return String(value ?? "");
+}
+
+function normalizeCitations(value: unknown) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return [value];
+  return [];
+}
+
+function buildMemoryResponse(params: {
+  caseId: string;
+  facts: Array<{
+    key: string;
+    valueJson: unknown;
+    citationsJson: unknown;
+    confidence: string;
+  }>;
+  obligations: Array<{
+    description: string;
+    dueDate: Date | null;
+    recurrence: string | null;
+    citationsJson: unknown;
+    confidence: string;
+  }>;
+  timeline: Array<{
+    title: string;
+    summary: string;
+    eventDate: Date | null;
+    citationsJson: unknown;
+    confidence: string | null;
+  }>;
+}) {
+  const lines: string[] = [];
+  const evidence: ChatResponse["evidence"] = [];
+
+  for (const fact of params.facts) {
+    const summary = formatValueSummary(fact.valueJson);
+    lines.push(`- ${fact.key}: ${summary}`);
+    evidence.push({
+      claim: `${fact.key}: ${summary}`,
+      source_refs: normalizeCitations(fact.citationsJson) as ChatResponse["evidence"][number]["source_refs"],
+      type: "fact",
+    });
+  }
+
+  for (const obligation of params.obligations) {
+    const due = obligation.dueDate ? ` (due ${obligation.dueDate.toDateString()})` : "";
+    const recurrence = obligation.recurrence ? ` (${obligation.recurrence})` : "";
+    const line = `- ${obligation.description}${due}${recurrence}`;
+    lines.push(line);
+    evidence.push({
+      claim: line,
+      source_refs: normalizeCitations(obligation.citationsJson) as ChatResponse["evidence"][number]["source_refs"],
+      type: "fact",
+    });
+  }
+
+  for (const event of params.timeline) {
+    const date = event.eventDate ? event.eventDate.toDateString() : "Unknown date";
+    const line = `- ${date}: ${event.title} - ${event.summary}`;
+    lines.push(line);
+    evidence.push({
+      claim: line,
+      source_refs: normalizeCitations(event.citationsJson) as ChatResponse["evidence"][number]["source_refs"],
+      type: "fact",
+    });
+  }
+
+  const summary =
+    lines.length > 0
+      ? "Case memory summary."
+      : "No stored case memory matched this question yet.";
+
+  return {
+    answer: {
+      summary,
+      direct_answer: lines.length ? lines.join("\n") : summary,
+      confidence: lines.length ? "medium" : "low",
+      uncertainties: lines.length
+        ? []
+        : [
+            {
+              topic: "Case memory",
+              why: "No stored facts or obligations matched the question.",
+              needed_sources: ["document"],
+            },
+          ],
+    },
+    evidence,
+    what_helps: [],
+    what_hurts: [],
+    next_steps: [],
+    questions_for_lawyer: [],
+    missing_or_requested_docs: [],
+    meta: {
+      used_retrieval: false,
+      retrieval_notes: "Memory-first response.",
+      safety_note: "Neutral, document-grounded guidance only.",
+    },
+  } satisfies ChatResponse;
+}
+
+async function searchDocumentChunks(params: {
+  caseId: string;
+  query: string;
+}) {
+  const keywordRows = await prisma.documentChunk.findMany({
+    where: {
+      caseId: params.caseId,
+      text: { contains: params.query, mode: "insensitive" },
+    },
+    take: 6,
+    orderBy: { createdAt: "desc" },
+  });
+
+  const storage = await resolveEmbeddingStorage();
+  let vectorRows: Array<{
+    id: string;
+    documentId: string;
+    pageNumber: number | null;
+    chunkIndex: number;
+    text: string;
+  }> = [];
+
+  if (storage === "vector") {
+    const [embedding] = await embedTexts([params.query]);
+    const vectorLiteral = `[${embedding.join(",")}]`;
+    vectorRows = await prisma.$queryRawUnsafe(
+      `SELECT "id", "documentId", "pageNumber", "chunkIndex", "text"
+       FROM "DocumentChunk"
+       WHERE "caseId" = '${params.caseId}' AND "embedding" IS NOT NULL
+       ORDER BY "embedding" <-> '${vectorLiteral}'::vector
+       LIMIT 6`,
+    );
+  }
+
+  const combined = new Map<string, typeof keywordRows[number]>();
+  for (const row of [...vectorRows, ...keywordRows]) {
+    combined.set(row.id, row as typeof keywordRows[number]);
+  }
+
+  return Array.from(combined.values()).slice(0, 8);
 }
 
 function extractSectionHint(text: string) {
@@ -463,20 +604,77 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(response);
     }
 
-    const { vectorStoreId } = await ensureVectorStore(caseRecord.id);
-    marks.vectorStoreReady = Date.now();
-    console.log(
-      JSON.stringify({
-        step: "vector_store_ready",
-        requestId,
-        caseId: caseRecord.id,
-        threadId: threadRecord.id,
-        ms: { vectorStoreReady: marks.vectorStoreReady - marks.t0 },
-      }),
-    );
+    if (isMemoryQuery(storedUserMessage)) {
+      const wantsTimeline = /timeline|when|date|dated/i.test(storedUserMessage);
+      const wantsObligations = /obligation|due|deadline|notice|pay|payment/i.test(
+        storedUserMessage,
+      );
+      const factTypes = isParentingFocusedQuery(storedUserMessage)
+        ? ["parenting_rule", "schedule", "custody", "travel", "communication"]
+        : ["parenting_rule", "custody", "support", "restriction", "definition", "other"];
+
+      const [facts, obligations, timeline] = await Promise.all([
+        prisma.caseFact.findMany({
+          where: { caseId: caseRecord.id, type: { in: factTypes } },
+          orderBy: { updatedAt: "desc" },
+          take: 8,
+        }),
+        wantsObligations
+          ? prisma.obligation.findMany({
+              where: { caseId: caseRecord.id },
+              orderBy: { updatedAt: "desc" },
+              take: 6,
+            })
+          : Promise.resolve([]),
+        wantsTimeline
+          ? prisma.timelineEvent.findMany({
+              where: { caseId: caseRecord.id },
+              orderBy: { occurredAt: "desc" },
+              take: 6,
+            })
+          : Promise.resolve([]),
+      ]);
+
+      if (facts.length || obligations.length || timeline.length) {
+        const response = buildMemoryResponse({
+          caseId: caseRecord.id,
+          facts: facts.map((fact) => ({
+            key: fact.key,
+            valueJson: fact.valueJson,
+            citationsJson: fact.citationsJson,
+            confidence: fact.confidence,
+          })),
+          obligations: obligations.map((obligation) => ({
+            description: obligation.description,
+            dueDate: obligation.dueDate ?? null,
+            recurrence: obligation.recurrence ?? null,
+            citationsJson: obligation.citationsJson,
+            confidence: obligation.confidence,
+          })),
+          timeline: timeline.map((event) => ({
+            title: event.title,
+            summary: event.summary,
+            eventDate: event.eventDate ?? event.occurredAt ?? null,
+            citationsJson: event.citationsJson ?? event.sourceRef,
+            confidence: event.confidence ?? "medium",
+          })),
+        });
+
+        await prisma.chatMessage.create({
+          data: {
+            caseId: caseRecord.id,
+            threadId: threadRecord.id,
+            role: "assistant",
+            content: response,
+          },
+        });
+
+        return NextResponse.json(response);
+      }
+    }
 
     const indexedDocs = await prisma.document.findMany({
-      where: { caseId: caseRecord.id, openaiFileId: { not: null } },
+      where: { caseId: caseRecord.id, chunks: { some: {} } },
       orderBy: { createdAt: "desc" },
     });
     const allDocs = await prisma.document.findMany({
@@ -493,7 +691,10 @@ export async function POST(req: NextRequest) {
         .map((job) => [job.documentId!, job.status]),
     );
 
-    hasIndexedFiles = indexedDocs.length > 0;
+    const chunkCount = await prisma.documentChunk.count({
+      where: { caseId: caseRecord.id },
+    });
+    hasIndexedFiles = chunkCount > 0;
     if (!hasIndexedFiles) {
       const response = buildDocumentsListResponse({
         caseId: caseRecord.id,
@@ -525,28 +726,28 @@ export async function POST(req: NextRequest) {
 
     console.log(
       JSON.stringify({
-        step: "vector_search_start",
+        step: "chunk_search_start",
         requestId,
         caseId: caseRecord.id,
         threadId: threadRecord.id,
       }),
     );
-    let retrievalResults = await runVectorSearch({
-      message,
-      vectorStoreId,
+    let retrievalResults = await searchDocumentChunks({
+      caseId: caseRecord.id,
+      query: message,
     });
 
     const agreementCandidates = indexedDocs.filter((doc) => {
       const fileName = getBlobFileName(doc.blobUrl, doc.title);
       return /separation agreement/i.test(doc.title) || /separation agreement/i.test(fileName);
     });
-    const preferredFileIds = agreementCandidates
-      .map((doc) => doc.openaiFileId)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    const preferredDocumentIds = agreementCandidates.map((doc) => doc.id);
 
-    if (isAgreementFocusedQuery(message) && preferredFileIds.length > 0) {
-      const preferredSet = new Set(preferredFileIds);
-      const filtered = retrievalResults.filter((result) => preferredSet.has(result.file_id));
+    if (isAgreementFocusedQuery(message) && preferredDocumentIds.length > 0) {
+      const preferredSet = new Set(preferredDocumentIds);
+      const filtered = retrievalResults.filter((result) =>
+        preferredSet.has(result.documentId),
+      );
       if (filtered.length > 0) {
         retrievalResults = filtered;
       }
@@ -554,15 +755,14 @@ export async function POST(req: NextRequest) {
 
     if (isParentingFocusedQuery(message)) {
       retrievalResults = retrievalResults.filter((result) => {
-        const contentText = result.content?.map((item) => item.text).join("\n\n") ?? "";
-        return !isIrrelevantParentingSection(contentText);
+        return !isIrrelevantParentingSection(result.text ?? "");
       });
     }
     marks.retrievalReady = Date.now();
     retrievedCount = retrievalResults.length;
     console.log(
       JSON.stringify({
-        step: "vector_search_done",
+        step: "chunk_search_done",
         requestId,
         caseId: caseRecord.id,
         threadId: threadRecord.id,
@@ -573,23 +773,18 @@ export async function POST(req: NextRequest) {
 
     const retrievedSources: RetrievedSource[] = [];
     if (retrievalResults.length > 0) {
-      const fileIds = Array.from(
-        new Set(
-          retrievalResults
-            .map((item) => item.file_id)
-            .filter((id): id is string => typeof id === "string" && id.length > 0),
-        ),
+      const documentIds = Array.from(
+        new Set(retrievalResults.map((item) => item.documentId)),
       );
       const docs = await prisma.document.findMany({
-        where: { openaiFileId: { in: fileIds } },
+        where: { id: { in: documentIds } },
       });
-      const docByFileId = new Map(docs.map((doc) => [doc.openaiFileId, doc]));
+      const docById = new Map(docs.map((doc) => [doc.id, doc]));
 
       for (const result of retrievalResults) {
-        if (!result.file_id) continue;
-        const doc = docByFileId.get(result.file_id);
+        const doc = docById.get(result.documentId);
         if (!doc) continue;
-        const rawContent = result.content?.map((item) => item.text).join("\n\n") ?? "";
+        const rawContent = result.text ?? "";
         const contentText = cleanExcerpt(rawContent, 450);
         const sectionHint = extractSectionHint(rawContent);
         retrievedSources.push({
@@ -597,8 +792,8 @@ export async function POST(req: NextRequest) {
           label: doc.title,
           locator: {
             label: doc.title,
-            page_start: null,
-            page_end: null,
+            page_start: result.pageNumber ?? null,
+            page_end: result.pageNumber ?? null,
             section: sectionHint,
             quote: cleanExcerpt(rawContent, 320),
           },
@@ -629,7 +824,7 @@ export async function POST(req: NextRequest) {
 
     const caseIdValue = caseRecord.id;
     const bulletClaims = retrievedSources.slice(0, 8).map((source) => ({
-      text: `Relevant section from ${source.label}: ${source.excerpt ?? ""}`,
+      text: `Relevant section found in ${source.label}.`,
       source,
     }));
     const mentionsHoliday = retrievedSources.some((source) =>
@@ -647,11 +842,11 @@ export async function POST(req: NextRequest) {
       answer: {
         summary:
           retrievedSources.length === 0
-            ? "No matching excerpts were found."
-            : "Closest relevant sections from the indexed documents.",
+            ? "No matching sections were found."
+            : "Relevant sections found in the indexed documents.",
         direct_answer:
           bulletClaims.length === 0
-            ? "No matching excerpts were found."
+            ? "No matching sections were found."
             : bulletClaims.map((item) => `- ${item.text}`).join("\n"),
         confidence: retrievedSources.length ? "medium" : "low",
         uncertainties: retrievedSources.length
@@ -856,7 +1051,7 @@ export async function POST(req: NextRequest) {
     const isTimeout = /timed out/i.test(message);
     if (
       isTimeout &&
-      /vector_search/i.test(message) &&
+      /chunk_search/i.test(message) &&
       caseRecord &&
       threadRecord
     ) {
@@ -888,7 +1083,7 @@ export async function POST(req: NextRequest) {
         response.answer.direct_answer,
       ].join("\n\n");
       response.meta.used_retrieval = false;
-      response.meta.retrieval_notes = `vector_search timed out. requestId=${requestId}`;
+      response.meta.retrieval_notes = `chunk_search timed out. requestId=${requestId}`;
 
       await prisma.chatMessage.create({
         data: {
