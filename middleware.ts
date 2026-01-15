@@ -1,4 +1,5 @@
 import { withAuth } from "next-auth/middleware";
+import type { NextRequestWithAuth } from "next-auth/middleware";
 import type { NextFetchEvent, NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
@@ -15,7 +16,7 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
   if (req.nextUrl.pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
-  return authMiddleware(req as any, event);
+  return authMiddleware(req as NextRequestWithAuth, event);
 }
 
 export const config = {
