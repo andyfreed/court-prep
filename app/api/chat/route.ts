@@ -131,7 +131,7 @@ function isContestedTopic(message: string) {
 }
 
 function isDocumentListQuery(message: string) {
-  return /what documents are (on file|uploaded)|documents on file|list documents|what docs do we have|what files are uploaded|list files|what files do we have/i.test(
+  return /what documents are (on file|uploaded)|documents on file|list documents|what docs do we have|what files are uploaded|list files|list the files|list uploaded files|show uploaded files|what files do we have|what files are there/i.test(
     message,
   );
 }
