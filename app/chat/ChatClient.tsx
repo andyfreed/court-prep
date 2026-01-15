@@ -219,9 +219,15 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
 }
 
 function ErrorMessage({ message }: { message: string }) {
+  const isAuth = /session expired|session\/auth issue/i.test(message);
   return (
     <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-      {message}
+      <div>{message}</div>
+      {isAuth ? (
+        <a className="mt-2 inline-flex text-sm font-medium underline" href="/login">
+          Go to login
+        </a>
+      ) : null}
     </div>
   );
 }

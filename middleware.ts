@@ -1,6 +1,8 @@
 import { withAuth } from "next-auth/middleware";
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-export default withAuth({
+const authMiddleware = withAuth({
   pages: {
     signIn: "/login",
   },
@@ -8,6 +10,13 @@ export default withAuth({
     authorized: ({ token }) => Boolean(token),
   },
 });
+
+export default function middleware(req: NextRequest) {
+  if (req.nextUrl.pathname.startsWith("/api/auth")) {
+    return NextResponse.next();
+  }
+  return authMiddleware(req);
+}
 
 export const config = {
   matcher: [
