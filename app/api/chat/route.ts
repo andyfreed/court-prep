@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { ensureVectorStore, getOrCreateDefaultThread } from "@/lib/cases";
 import { buildResponsesParams, getOpenAI } from "@/lib/openai";
-import type { ResponseIncludable } from "openai/resources/responses";
 import { prisma } from "@/lib/db";
 import {
   ChatResponseSchema,
@@ -285,9 +284,7 @@ async function runResponse(params: {
           input: params.input,
           tools,
           tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
-          include: (params.vectorStoreId
-            ? ["file_search_call.results"]
-            : undefined) as ResponseIncludable[] | undefined,
+          include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
           max_output_tokens: 1200,
         }),
         { signal },
