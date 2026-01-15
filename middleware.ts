@@ -16,6 +16,9 @@ export default function middleware(req: NextRequest, event: NextFetchEvent) {
   if (req.nextUrl.pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
+  if (req.nextUrl.pathname.startsWith("/api/documents/upload")) {
+    return NextResponse.next();
+  }
   return authMiddleware(req as NextRequestWithAuth, event);
 }
 

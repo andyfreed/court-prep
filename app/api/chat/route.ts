@@ -665,6 +665,52 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const isTimeout = /timed out/i.test(message);
+    if (
+      isTimeout &&
+      /file_search/i.test(message) &&
+      caseRecord &&
+      threadRecord
+    ) {
+      const docs = await prisma.document.findMany({
+        where: { caseId: caseRecord.id },
+        orderBy: { createdAt: "desc" },
+      });
+      const jobs = await prisma.documentIngestJob.findMany({
+        where: { caseId: caseRecord.id },
+        orderBy: { updatedAt: "desc" },
+      });
+      const jobByDocumentId = new Map(
+        jobs
+          .filter((job) => job.documentId)
+          .map((job) => [job.documentId!, job.status]),
+      );
+      const response = buildDocumentsListResponse({
+        caseId: caseRecord.id,
+        documents: docs.map((doc) => ({
+          document_version_id: doc.id,
+          title: doc.title,
+          status: jobByDocumentId.get(doc.id) ?? "done",
+        })),
+      });
+      response.answer.summary = "Retrieval timed out.";
+      response.answer.direct_answer = [
+        "I could not retrieve evidence in time.",
+        response.answer.direct_answer,
+      ].join("\n\n");
+      response.meta.used_retrieval = false;
+      response.meta.retrieval_notes = "file_search timed out";
+
+      await prisma.chatMessage.create({
+        data: {
+          caseId: caseRecord.id,
+          threadId: threadRecord.id,
+          role: "assistant",
+          content: response,
+        },
+      });
+
+      return NextResponse.json(response);
+    }
     logTimings({
       step: "failed",
       caseId: caseRecord?.id ?? null,
