@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { openai } from "@/lib/openai";
+import { getOpenAI } from "@/lib/openai";
 import { TimelineExtractResponseSchema } from "@/lib/schemas";
 import { TIMELINE_EXTRACTION_PROMPT } from "@/lib/prompts";
 import { getOrCreateCase } from "@/lib/cases";
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
       sourceText,
     ].join("\n\n");
 
-    const response = await openai.responses.create({
+    const response = await getOpenAI().responses.create({
       model: "gpt-5.2-pro",
       instructions: TIMELINE_EXTRACTION_PROMPT,
       input,

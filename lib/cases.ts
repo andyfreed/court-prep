@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { openai } from "@/lib/openai";
+import { getOpenAI } from "@/lib/openai";
 
 export async function getOrCreateCase(caseId?: string) {
   if (caseId) {
@@ -23,7 +23,7 @@ export async function ensureVectorStore(caseId?: string) {
     return { caseRecord, vectorStoreId: caseRecord.vectorStoreId };
   }
 
-  const vectorStore = await openai.vectorStores.create({
+  const vectorStore = await getOpenAI().vectorStores.create({
     name: `case-${caseRecord.id}`,
   });
 

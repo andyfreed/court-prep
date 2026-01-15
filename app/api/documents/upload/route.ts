@@ -3,7 +3,7 @@ import { put } from "@vercel/blob";
 
 import { prisma } from "@/lib/db";
 import { ensureVectorStore } from "@/lib/cases";
-import { openai } from "@/lib/openai";
+import { getOpenAI } from "@/lib/openai";
 
 export const runtime = "nodejs";
 
@@ -24,12 +24,12 @@ export async function POST(req: NextRequest) {
       access: "public",
     });
 
-    const openaiFile = await openai.files.create({
+    const openaiFile = await getOpenAI().files.create({
       file,
       purpose: "assistants",
     });
 
-    await openai.vectorStores.files.create(vectorStoreId, {
+    await getOpenAI().vectorStores.files.create(vectorStoreId, {
       file_id: openaiFile.id,
     });
 

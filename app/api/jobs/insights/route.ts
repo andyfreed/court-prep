@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
-import { openai } from "@/lib/openai";
+import { getOpenAI } from "@/lib/openai";
 import { InsightsResponseSchema } from "@/lib/schemas";
 import { INSIGHTS_PROMPT } from "@/lib/prompts";
 import { getOrCreateCase } from "@/lib/cases";
@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
       evidence.map((item, index) => `${index + 1}. ${item}`).join("\n"),
     ].join("\n\n");
 
-    const response = await openai.responses.create({
+    const response = await getOpenAI().responses.create({
       model: "gpt-5.2-pro",
       instructions: INSIGHTS_PROMPT,
       input,

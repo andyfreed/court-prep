@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { ensureVectorStore } from "@/lib/cases";
-import { openai } from "@/lib/openai";
+import { getOpenAI } from "@/lib/openai";
 import {
   ChatResponseSchema,
   type ChatResponse,
@@ -58,7 +58,7 @@ async function runResponse(params: {
       ]
     : undefined;
 
-  const response = await openai.responses.create({
+  const response = await getOpenAI().responses.create({
     model: "gpt-5.2-pro",
     instructions: params.instructions,
     input: params.input,
