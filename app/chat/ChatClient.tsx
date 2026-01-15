@@ -94,6 +94,22 @@ function formatTimestamp(value: string) {
   return new Date(value).toLocaleString();
 }
 
+function getRequestId(notes?: string | null) {
+  if (!notes) return null;
+  const match = notes.match(/requestId=([a-f0-9-]+)/i);
+  return match ? match[1] : null;
+}
+
+function isPartialResponse(response: ChatResponse) {
+  const summary = response.answer.summary.toLowerCase();
+  const notes = response.meta?.retrieval_notes?.toLowerCase() ?? "";
+  return (
+    summary.includes("retrieved evidence excerpts") ||
+    notes.includes("stage 1") ||
+    notes.includes("timed out")
+  );
+}
+
 function truncateQuote(text: string | null | undefined, maxLength: number) {
   if (!text) return "";
   if (text.length <= maxLength) return text;
@@ -109,8 +125,51 @@ function getEvidenceQuote(sources: SourceRef[]) {
   return null;
 }
 
-function AssistantMessage({ response }: { response: ChatResponse }) {
+function buildCitationText(source: SourceRef, quote: string | null) {
+  const label = getSourceLabel(source);
+  const pageStart = source.locator.page_start ?? null;
+  const pageEnd = source.locator.page_end ?? null;
+  const detail = pageStart
+    ? pageEnd && pageEnd !== pageStart
+      ? `p.${pageStart}-${pageEnd}`
+      : `p.${pageStart}`
+    : null;
+  const lead = detail ? `${label} (${detail})` : label;
+  const snippet = quote ? truncateQuote(quote, 320) : "";
+  return snippet ? `${lead} ${snippet}` : lead;
+}
+
+type AssistantMessageProps = {
+  response: ChatResponse;
+  onRetry?: () => void;
+};
+
+function AssistantMessage({ response, onRetry }: AssistantMessageProps) {
   const [showRaw, setShowRaw] = useState(false);
+  const [copiedCitationId, setCopiedCitationId] = useState<string | null>(null);
+  const [copiedRaw, setCopiedRaw] = useState(false);
+  const partial = isPartialResponse(response);
+  const requestId = getRequestId(response.meta?.retrieval_notes);
+
+  async function handleCopyCitation(id: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedCitationId(id);
+      setTimeout(() => setCopiedCitationId(null), 2000);
+    } catch {
+      setCopiedCitationId(null);
+    }
+  }
+
+  async function handleCopyRaw() {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(response, null, 2));
+      setCopiedRaw(true);
+      setTimeout(() => setCopiedRaw(false), 2000);
+    } catch {
+      setCopiedRaw(false);
+    }
+  }
 
   return (
     <div className="space-y-4 text-sm">
@@ -119,6 +178,26 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           Confidence: {response.answer.confidence}
         </span>
       </div>
+      {partial ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+          <div className="font-semibold">Partial result (retrieval incomplete).</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={onRetry}>
+              Retry
+            </Button>
+            {requestId ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => navigator.clipboard.writeText(requestId)}
+              >
+                Copy requestId
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <div className="space-y-2">
         <p className="text-base font-semibold text-foreground">
           {response.answer.summary}
@@ -138,6 +217,10 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           <div className="mt-3 space-y-3">
             {response.evidence.map((item, index) => {
               const quote = getEvidenceQuote(item.source_refs);
+              const firstSource = item.source_refs[0];
+              const citationText = firstSource
+                ? buildCitationText(firstSource, quote)
+                : item.claim;
               return (
                 <div key={`${item.claim}-${index}`} className="space-y-2">
                   <p className="text-sm text-foreground">- {item.claim}</p>
@@ -146,7 +229,21 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
                       "{truncateQuote(quote, 320)}"
                     </div>
                   ) : null}
-                  <SourceList sources={item.source_refs} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SourceList sources={item.source_refs} />
+                    {firstSource ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleCopyCitation(`${item.claim}-${index}`, citationText)}
+                      >
+                        {copiedCitationId === `${item.claim}-${index}`
+                          ? "Copied"
+                          : "Copy citation"}
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               );
             })}
@@ -163,9 +260,14 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
           {showRaw ? "Hide raw JSON" : "Show raw JSON"}
         </button>
         {showRaw ? (
-          <pre className="mt-3 max-h-96 overflow-auto rounded-lg border bg-card p-4 text-xs text-muted-foreground">
-            {JSON.stringify(response, null, 2)}
-          </pre>
+          <div className="mt-3 space-y-2">
+            <Button type="button" size="sm" variant="outline" onClick={handleCopyRaw}>
+              {copiedRaw ? "Copied" : "Copy raw JSON"}
+            </Button>
+            <pre className="max-h-96 overflow-auto rounded-lg border bg-card p-4 text-xs text-muted-foreground">
+              {JSON.stringify(response, null, 2)}
+            </pre>
+          </div>
         ) : null}
       </div>
     </div>
@@ -205,6 +307,8 @@ export default function ChatClient({
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastUserMessageRef = useRef<string | null>(null);
 
   const threadList = useMemo(
     () => [{ id: threadId, title: threadTitle }],
@@ -238,7 +342,12 @@ export default function ChatClient({
     const text =
       message.role === "user"
         ? String((message.content as { text?: string })?.text ?? "")
-        : JSON.stringify(message.content, null, 2);
+        : [
+            (message.content as ChatResponse)?.answer?.summary ?? "",
+            (message.content as ChatResponse)?.answer?.direct_answer ?? "",
+          ]
+            .filter(Boolean)
+            .join("\n\n");
 
     try {
       await navigator.clipboard.writeText(text);
@@ -249,14 +358,14 @@ export default function ChatClient({
     }
   }
 
-  async function handleSend(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = input.trim();
+  async function sendMessage(text: string) {
+    const trimmed = text.trim();
     if (!trimmed) return;
 
     setError(null);
     setIsSending(true);
     const controller = new AbortController();
+    abortRef.current = controller;
     const timeoutId = window.setTimeout(() => controller.abort(), 180000);
 
     const optimisticUser: ChatMessage = {
@@ -268,6 +377,7 @@ export default function ChatClient({
 
     setMessages((prev) => [...prev, optimisticUser]);
     setInput("");
+    lastUserMessageRef.current = trimmed;
 
     try {
       let documentsList: DocumentListEntry[] | null = null;
@@ -342,6 +452,7 @@ export default function ChatClient({
     } finally {
       window.clearTimeout(timeoutId);
       setIsSending(false);
+      abortRef.current = null;
     }
   }
 
@@ -411,13 +522,28 @@ export default function ChatClient({
                         message={(message.content as { message?: string })?.message ?? ""}
                       />
                     ) : (
-                      <AssistantMessage response={message.content as ChatResponse} />
+                      <AssistantMessage
+                        response={message.content as ChatResponse}
+                        onRetry={() => {
+                          if (lastUserMessageRef.current) {
+                            void sendMessage(lastUserMessageRef.current);
+                          }
+                        }}
+                      />
                     )}
                   </div>
                 )}
               </div>
             ))
           )}
+          {isSending ? (
+            <div className="flex flex-col items-start gap-2">
+              <div className="text-[11px] text-muted-foreground">Assistant - typing...</div>
+              <div className="rounded-2xl border bg-card px-4 py-3 text-sm text-muted-foreground">
+                Thinking...
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {!isNearBottom ? (
@@ -438,18 +564,38 @@ export default function ChatClient({
         ) : null}
         <form
           className="sticky bottom-0 space-y-3 border-t bg-background/95 p-4 backdrop-blur"
-          onSubmit={handleSend}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void sendMessage(input);
+          }}
         >
           <textarea
             className="min-h-[100px] w-full resize-none rounded-lg border bg-background px-3 py-2 text-sm"
             placeholder="Ask a question about custody schedules, agreements, or evidence..."
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void sendMessage(input);
+              }
+            }}
           />
           {error ? <p className="text-sm text-red-500">{error}</p> : null}
-          <Button type="submit" disabled={isSending}>
-            {isSending ? "Sending..." : "Send"}
-          </Button>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button type="submit" disabled={isSending}>
+              {isSending ? "Sending..." : "Send"}
+            </Button>
+            {isSending ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => abortRef.current?.abort()}
+              >
+                Stop generating
+              </Button>
+            ) : null}
+          </div>
         </form>
       </section>
     </div>
