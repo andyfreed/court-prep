@@ -274,6 +274,9 @@ async function runResponse(params: {
         },
       ]
     : undefined;
+  const include = params.vectorStoreId
+    ? (["file_search_call.results"] as const)
+    : undefined;
 
   const response = await withTimeout(
     (signal) =>
@@ -284,9 +287,9 @@ async function runResponse(params: {
           input: params.input,
           tools,
           tool_choice: tools ? (params.requireFileSearch ? "required" : "auto") : undefined,
-          include: params.vectorStoreId ? ["file_search_call.results"] : undefined,
+          include,
           max_output_tokens: 1200,
-        }),
+        }) as any,
         { signal },
       ),
     params.timeoutMs,
@@ -294,7 +297,7 @@ async function runResponse(params: {
   );
 
   return {
-    text: response.output_text ?? "",
+    text: (response as { output_text?: string }).output_text ?? "",
     results: extractFileSearchResults(response),
   };
 }
