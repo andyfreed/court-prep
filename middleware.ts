@@ -1,5 +1,5 @@
 import { withAuth } from "next-auth/middleware";
-import type { NextRequest } from "next/server";
+import type { NextFetchEvent, NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 const authMiddleware = withAuth({
@@ -11,11 +11,11 @@ const authMiddleware = withAuth({
   },
 });
 
-export default function middleware(req: NextRequest) {
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
   if (req.nextUrl.pathname.startsWith("/api/auth")) {
     return NextResponse.next();
   }
-  return authMiddleware(req);
+  return authMiddleware(req, event);
 }
 
 export const config = {
