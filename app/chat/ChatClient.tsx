@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Button } from "@/components/ui/button";
 import type { ChatResponse, SourceRef } from "@/lib/schemas";
@@ -36,10 +38,9 @@ function getSourceLabel(source: SourceRef) {
 
 function getSourceHref(source: SourceRef) {
   if (source.ref_type === "document" && source.document_version_id) {
-    const page = source.locator.page_start ?? null;
-    return page
-      ? `/documents/${source.document_version_id}?page=${page}`
-      : `/documents/${source.document_version_id}`;
+    const pageStart = source.locator.page_start ?? null;
+    const pageParam = pageStart ? `?page=${pageStart}` : "";
+    return `/documents/${source.document_version_id}${pageParam}`;
   }
   if (source.ref_type === "transcript_message") {
     const ids = source.transcript_message_ids?.join(",") ?? "";
@@ -51,8 +52,14 @@ function getSourceHref(source: SourceRef) {
 function SourceChip({ source }: { source: SourceRef }) {
   const href = getSourceHref(source);
   const label = getSourceLabel(source);
-  const detail = source.locator.page_start ? `p.${source.locator.page_start}` : null;
-  const text = detail ? `${label} - ${detail}` : label;
+  const pageStart = source.locator.page_start ?? null;
+  const pageEnd = source.locator.page_end ?? null;
+  const detail = pageStart
+    ? pageEnd && pageEnd !== pageStart
+      ? `p.${pageStart}-${pageEnd}`
+      : `p.${pageStart}`
+    : null;
+  const text = detail ? `${label} ${detail}` : label;
 
   if (href) {
     return (
@@ -83,83 +90,60 @@ function SourceList({ sources }: { sources: SourceRef[] }) {
   );
 }
 
-function splitAnswerLines(text: string) {
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+function formatTimestamp(value: string) {
+  return new Date(value).toLocaleString();
 }
 
-function isBulletLine(text: string) {
-  return /^[-•]\s+/.test(text) || /^\d+\.\s+/.test(text);
+function truncateQuote(text: string | null | undefined, maxLength: number) {
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trim()}...`;
 }
 
-function stripBullet(text: string) {
-  return text.replace(/^[-•]\s+/, "").replace(/^\d+\.\s+/, "");
-}
-
-function getQuoteFromSource(source: SourceRef) {
-  return source.locator.quote || null;
+function getEvidenceQuote(sources: SourceRef[]) {
+  for (const source of sources) {
+    if (source.locator.quote) {
+      return source.locator.quote;
+    }
+  }
+  return null;
 }
 
 function AssistantMessage({ response }: { response: ChatResponse }) {
   const [showRaw, setShowRaw] = useState(false);
-  const lines = splitAnswerLines(response.answer.direct_answer);
-  const hasBullets = lines.some((line) => isBulletLine(line));
-  const evidenceByIndex = response.evidence;
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-2 text-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Answer
-          </h3>
-          <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-            Confidence: {response.answer.confidence}
-          </span>
-        </div>
-        <p className="font-medium text-foreground">{response.answer.summary}</p>
-        <div className="space-y-2 text-muted-foreground">
-          {lines.length === 0 ? (
-            <p>{response.answer.direct_answer}</p>
-          ) : (
-            lines.map((line, index) => {
-              const isBullet = isBulletLine(line);
-              const text = isBullet ? stripBullet(line) : line;
-              const evidence = evidenceByIndex[index];
-              return (
-                <div key={`${line}-${index}`} className="space-y-2">
-                  <div className="flex flex-wrap items-start gap-2">
-                    {isBullet ? <span className="text-foreground">•</span> : null}
-                    <p className="flex-1">{text}</p>
-                  </div>
-                  {evidence?.source_refs?.length ? (
-                    <SourceList sources={evidence.source_refs} />
-                  ) : null}
-                </div>
-              );
-            })
-          )}
+    <div className="space-y-4 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+          Confidence: {response.answer.confidence}
+        </span>
+      </div>
+      <div className="space-y-2">
+        <p className="text-base font-semibold text-foreground">
+          {response.answer.summary}
+        </p>
+        <div className="prose prose-sm max-w-none text-foreground">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {response.answer.direct_answer}
+          </ReactMarkdown>
         </div>
       </div>
 
       {response.evidence.length ? (
-        <details className="rounded-lg border bg-card p-4 text-sm">
-          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Show evidence
+        <details className="rounded-lg border bg-background/40 p-3">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Evidence
           </summary>
           <div className="mt-3 space-y-3">
             {response.evidence.map((item, index) => {
-              const quote = item.source_refs
-                .map((source) => getQuoteFromSource(source))
-                .find(Boolean);
+              const quote = getEvidenceQuote(item.source_refs);
               return (
                 <div key={`${item.claim}-${index}`} className="space-y-2">
                   <p className="text-sm text-foreground">- {item.claim}</p>
                   {quote ? (
-                    <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
-                      “{quote}”
+                    <div className="rounded-md border bg-card p-3 text-xs text-muted-foreground">
+                      "{truncateQuote(quote, 320)}"
                     </div>
                   ) : null}
                   <SourceList sources={item.source_refs} />
@@ -168,89 +152,6 @@ function AssistantMessage({ response }: { response: ChatResponse }) {
             })}
           </div>
         </details>
-      ) : null}
-
-      {response.what_helps.length ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            What Helps
-          </h3>
-          <div className="space-y-3">
-            {response.what_helps.map((item, index) => (
-              <div key={`${item.point}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">- {item.point}</p>
-                <SourceList sources={item.source_refs} />
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {response.what_hurts.length ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            What Hurts
-          </h3>
-          <div className="space-y-3">
-            {response.what_hurts.map((item, index) => (
-              <div key={`${item.point}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">- {item.point}</p>
-                <SourceList sources={item.source_refs} />
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {response.next_steps.length ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Next Steps
-          </h3>
-          <div className="space-y-3">
-            {response.next_steps.map((item, index) => (
-              <div key={`${item.action}-${index}`} className="space-y-1 text-sm">
-                <div className="font-medium text-foreground">- {item.action}</div>
-                <div className="text-xs text-muted-foreground">
-                  Owner: {item.owner} | Priority: {item.priority}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {response.questions_for_lawyer.length ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Questions For Lawyer
-          </h3>
-          <div className="space-y-3">
-            {response.questions_for_lawyer.map((item, index) => (
-              <div key={`${item.question}-${index}`} className="space-y-2">
-                <p className="text-sm text-foreground">- {item.question}</p>
-                <p className="text-xs text-muted-foreground">{item.why_it_matters}</p>
-                <SourceList sources={item.source_refs} />
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {response.missing_or_requested_docs.length ? (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Missing Documents
-          </h3>
-          <div className="space-y-3">
-            {response.missing_or_requested_docs.map((item, index) => (
-              <div key={`${item.doc_name}-${index}`} className="space-y-1 text-sm">
-                <div className="font-medium text-foreground">- {item.doc_name}</div>
-                <div className="text-xs text-muted-foreground">{item.why}</div>
-              </div>
-            ))}
-          </div>
-        </div>
       ) : null}
 
       <div>
@@ -488,8 +389,8 @@ export default function ChatClient({
               >
                 <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                   <span>
-                    {message.role === "user" ? "You" : "Assistant"} •{" "}
-                    {new Date(message.createdAt).toLocaleString()}
+                    {message.role === "user" ? "You" : "Assistant"} - {" "}
+                    {formatTimestamp(message.createdAt)}
                   </span>
                   <button
                     type="button"
